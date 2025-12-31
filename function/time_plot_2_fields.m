@@ -1,0 +1,63 @@
+function []=time_plot_2_fields(E1, E2,dz,z1, z2,speed, E1_name, E2_name,varargin)
+%plots 2 matrixs in time
+%ussage: with saving AVI file:time_plot_2_fields(E,dz,medium,speed,'testing123') 
+%        without saving AVI file: time_plot_2_fields(E,dz,medium,speed)
+name=[varargin{:}];
+
+Y_axis1=max(max(E1))*1.01;
+Y_axis2= max(max(E2))*1.01;
+%Y_axis=5;
+
+
+
+[N ,I]=size(E1);
+z=0:dz:dz*(I-1);
+z_lin= [z(1:z1) z(z1:z2) z(z2:end)];
+line_matrial= 2.1*[zeros(1,z1) ones(1,z2-z1+2) zeros(1,I-z2)]-1.05;
+
+
+ax = tiledlayout(2,1);
+frame1= nexttile;
+frame2= nexttile;
+
+if isempty (name)
+    for n=1:speed:N
+        plot(frame1,z,E1(n,:),z_lin,Y_axis1 * line_matrial,'linewidth',2);
+        axis(frame1, [ 0 z(end)   -Y_axis1 Y_axis1])
+        plot(frame2,z,E2(n,:),z_lin, Y_axis2 *line_matrial,'linewidth',2);
+        axis(frame2, [ 0 z(end)   -Y_axis2 Y_axis2])
+        title(frame1, E1_name)
+        title(frame2, E2_name)
+
+        drawnow;
+        if mod(n-1,400*speed)==0
+            x=1;
+        end
+    end
+else
+    Y_axis1= 1.15*Y_axis1;
+    Y_axis2= 1.15*Y_axis2;
+    v= VideoWriter(name, 'Uncompressed AVI');
+    frame1.Units='pixels';
+    pos = frame1.Position;
+    ti = frame1.TightInset;
+    rect = [-2.5*ti(1), -11*ti(2), 1.1*(pos(3)+ti(1)+ti(3)), 2.35*(pos(4)+ti(2)+ti(4))];
+    open(v)
+    for n=1:speed:N
+        
+        plot(frame1,z,E1(n,:),z_lin,Y_axis1 * line_matrial,'linewidth',2);
+        axis(frame1, [ 0 z(end)   -Y_axis1 Y_axis1])
+        plot(frame2,z,E2(n,:),z_lin, Y_axis2 *line_matrial,'linewidth',2);
+        axis(frame2, [ 0 z(end)   -Y_axis2 Y_axis2])
+        title(frame1, E1_name)
+        title(frame2, E2_name)
+        xlabel(frame1,"Z [m]")
+        ylabel(frame1,'H_x [A/m]')
+        xlabel(frame2,"Z [m]")
+        ylabel(frame2,'H_x [A/m]')
+        drawnow;
+        frame = getframe(frame1, rect);
+        writeVideo(v,frame)
+    end
+    close(v)
+end

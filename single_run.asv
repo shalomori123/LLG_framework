@@ -1,0 +1,60 @@
+clear all, clc
+eps=8.854e-12;
+miu=4*pi*1e-7;
+c=1/sqrt(eps*miu);
+Teslta= 795774.7; %[A/m] = 1[T]
+
+
+q=1.60217646e-19;                        %[cb]
+g=2;                                     %[Landau factor]
+me=9.1093821545*1e-31;                   %[gram] electron mass
+gma_factor=1;
+gma = gma_factor*g*q/(2*me);  
+lamda= 800e-9;
+
+%%
+[clk_s tf] = clock;
+e_r= [1;1]; %define eps_r
+% max_field= 5e9;  % [A/m]
+% pulse_width= 10;
+sigma= [ 0 ;  0]*1e-3; %define condatory  [S/m]
+ms0= 5e5;
+alpha= 0.01;
+amplitude= 5e5;
+run_fea= [pi/2 -pi/2 0 ];
+index_fea= 3;
+H_ext= c/lamda/gma;
+lamda= 800e-9;
+%%
+[pulse ,dt] = gassian_gen(6000, 7, run_fea(index_fea));
+
+
+%%
+
+[E,H,ms, z1, z2, z_len,dz,W, Tsteps] =gassian_simulation(e_r,sigma,ms0,alpha, amplitude, 6 , 0, H_ext*Teslta , 1 ...
+    ,"time_cut",40,"start_matiral",0.1,"len_matiral",15*lamda,"len_in_lemda",17,"simlation_time",5e-11 ...
+    ,"lamd0", lamda);
+
+% H= simlation_Hex1.H;
+% Hx=squeeze(H(1,const.z2+1,:));
+% Hy= squeeze(H(2,const.z2+1,:));
+% [pks_x,locs_x] = findpeaks(Hx);
+% [pks_,locs_y] = findpeaks(Hy);
+% 
+% T_vec= [locs_x(2:end)- locs_x(1:end-1) ; locs_y(2:end)- locs_y(1:end-1)];
+% T= mean(T_vec);
+%%
+fv= [E(1,[z1-1 z2+1],end);E(2,[z1-1 z2+1],end)];
+[tau,epsilon] =polellip(fv)
+hold on
+polellip(fv(:,1))
+
+polellip(fv(:,2))
+
+%%
+dt= dz/2/c;
+plot_moments(ms,dt,3)
+% Ts = measure_wave_length(ms(3,3,:), [3000 8000]);
+% Tf = measure_wave_length(ms(3,3,:), [740000 749480]);
+
+

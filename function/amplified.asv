@@ -1,0 +1,21 @@
+function [Pulse]= amplified(w,dt, envelope, polarization,fie, teta)
+% This function gets the envelope of puls and returns an amplified puls
+% with polarization
+% w = frequency
+% polarization = 
+% direction = 1 for clockcycle and -1 for counter clockcycle
+
+
+Tsteps= length(envelope);
+t= 0:dt:dt*(Tsteps-1);
+
+if (polarization == 'x')
+    Pulse= [envelope; zeros(size(envelope))] .*[cos(w*t); zeros(size(t))];
+else
+    if (polarization == 'y')
+       Pulse= [ zeros(size(envelope)), envelope] .*[cos(w*t); zeros(size(t))];
+    else 
+       Pulse= [envelope; envelope] .*[cos(w*t); cos(w*t+fie)]/ sqrt(1+abs(cos(fie)));
+    end
+end
+Pulse= Pulse.';
