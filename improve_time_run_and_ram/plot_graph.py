@@ -95,6 +95,7 @@ for mag in range(3):
 
 transmition = S_pass/ S_transmission
 Return = S_return/ S_transmission
+chak = (transmition - Return).T
 print(-Return.T)
 print(transmition.T)
 
