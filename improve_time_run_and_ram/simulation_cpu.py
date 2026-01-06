@@ -14,39 +14,50 @@ GAMMA_FACTOR = 1
 GAMMA = GAMMA_FACTOR * LANDAU_FACTOR * ELEMENTARY_CHARGE / (2 * ELECTRON_MASS)  # [rad/sec*T]
 
 
-def pulse_gen(max_E, phase_diff, pulse_width, dt, wavelength=800e-9, polarization_angle=0, safety_factor=4):
+def pulse_gen(max_E: float, phase: float, FWHM: float, dt : float, 
+              wave_len = 800e-9, angle = 0, safety_start = 4):
     """
-    input-
-    :param max_E: max value of the fields [A/m]
-    :param phase_diff: phase difference between E_x and E_y
-    :param pulse_width: time from half power to half of optical autorotation [sec].
-    :param dt: time step size.
-    :param wavelength: wave len in void to the AC amplified
-    :param polarization_angle: angle of the central axis of the polarization [rad]
-    
-    :return: function out_pulse(n) 
-    """
-    # move to angular frequency
-    angular_freq = 2 * np.pi * SPEED_OF_LIGHT / wavelength
-    polarization_angle -= np.pi / 4
-    rotation_matrix = np.array([np.cos(polarization_angle), -np.sin(polarization_angle), 
-                                np.sin(polarization_angle), np.cos(polarization_angle)])
-    rotation_matrix = rotation_matrix.reshape((2, 2))
-    
-    pulse_vector = max_E * rotation_matrix @ np.array([1, np.exp(-phase_diff * 1j)]).reshape(2)
-    
-    sigma = (0.5 / (np.log(2) ** 0.5)) * pulse_width
-    peak_location = safety_factor * sigma
+    Generates function for complex E-field components (Ex, Ey) of a Gaussian pulse.
 
-    def out_pulse(time_index: int) -> np.array:
+    :param max_E: Peak E-field strength [V/m] (amplitude).
+    :param phase: Phase difference between E_x and E_y [rad].
+    :param FWHM: Full Width at Half Maximum [sec].
+    :param dt: Time step size [s].
+    :param wave_len: Wavelength in vacuum [m].
+    :param angle: Polarization rotation angle [rad].
+    :param safety_start: Sigma widths before t=0 where pulse peaks.
+    
+    :return: function out_pulse(n) which returns the complex E-field (2D vector).
+    """
+    # Angular frequency
+    omega = 2 * np.pi * SPEED_OF_LIGHT / wave_len
+    angle -= np.pi/4
+    
+    # Rotation matrix
+    R = np.array([
+        [np.cos(angle) , -np.sin(angle)], 
+        [np.sin(angle) , np.cos(angle) ]
+    ])
+    
+    # Complex amplitude vector
+    A_vec = np.array([1, np.exp(-phase * 1j)]).reshape(2) 
+    pulse_amp = max_E * R @ A_vec 
+    
+    # Gaussian sigma width
+    sigma = (0.5 / (np.log(2)**0.5)) * FWHM
+    peak_loc = safety_start * sigma
+
+    def out_pulse(n: int) -> np.array:
         """
-        input-
-        :param time_index: index of step in time
+        Calculates the E-field at time step n.
+        :param n: index of time step
         :return: 2D complex np.array of the inject pulse (E_x E_y) in this time step 
         """
-        current_time = time_index * dt
-        result = pulse_vector * np.exp(-(current_time - peak_location) ** 2 / (2 * sigma ** 2)) * np.exp(1j * angular_freq * current_time)
+        t = n * dt
+        # Gaussian envelope * Carrier wave
+        result = pulse_amp * np.exp(- (t - peak_loc)**2 / (2 * sigma**2)) * np.exp(1j * omega * t)
         return result
+        
     return out_pulse
 
 
