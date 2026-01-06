@@ -50,36 +50,56 @@ def pulse_gen(max_E, phase_diff, pulse_width, dt, wavelength=800e-9, polarizatio
     return out_pulse
 
 
-def LLG_step(M: np.array, H: np.array, dt: float, damping: float) -> np.array:
-    """"""
+def LLG_step(M: np.array, H: np.array, dt: float, alpha: float) -> np.array:
+    """
+    Calculates the next magnetization vector M using the LLG equation in Runge-Kutta 4th Order (RK4 scheme).
+    
+    :param M: Current magnetization (N x 3).
+    :param H: Total effective field (N x 3).
+    :param dt: Time step size [s].
+    :param alpha: Gilbert damping parameter.
+    
+    :return: Updated M vector.
+    """
+    # Magnitude of M (used in the denominator of the damping term)
+    # Calculates |M| for all N points (N x 1) and keeps dimensions for broadcasting.
+    M_mag = np.linalg.norm(M, axis=1, keepdims=True) # GPU potential
 
-    mag_magnitude = np.linalg.norm(M, axis=1, keepdims=True)
+    # Effective LLG terms
+    gamma_ll = GAMMA / (1 + alpha**2)
+    lambda_ll = gamma_ll * alpha
 
-    gamma_ll = GAMMA / ((1 + damping ** 2))
-    ll_lambda = GAMMA * damping / (1 + damping ** 2)
+    def M_derivative(M_guess: np.array) -> np.array: # GPU potential
+        """Calculates the instantaneous slope dM/dt for the LLG equation."""
+        M_cross_H = np.cross(M_guess, H, axis=1)
 
-    # Compute LLG terms
-    # an = slope_k1
-    slope_k1 = -gamma_ll * MU_0 * np.cross(M, H, axis=1) - \
-               (ll_lambda * MU_0 / mag_magnitude) * np.cross(M, np.cross(M, H, axis=1), axis=1)
-
-    # bn = slope_k2
-    slope_k2 = -gamma_ll * MU_0 * np.cross(M + (dt / 2) * slope_k1, H, axis=1) - \
-               (ll_lambda * MU_0 / mag_magnitude) * np.cross(M + (dt / 2) * slope_k1, 
-                                                             np.cross(M + (dt / 2) * slope_k1, H, axis=1), axis=1)
-
-    # cn = slope_k3
-    slope_k3 = -gamma_ll * MU_0 * np.cross(M + (dt / 2) * slope_k2, H, axis=1) - \
-               (ll_lambda * MU_0 / mag_magnitude) * np.cross(M + (dt / 2) * slope_k2, 
-                                                             np.cross(M + (dt / 2) * slope_k2, H, axis=1), axis=1)
-
-    # dn = slope_k4
-    slope_k4 = -gamma_ll * MU_0 * np.cross(M + dt * slope_k3, H, axis=1) - \
-               (ll_lambda * MU_0 / mag_magnitude) * np.cross(M + dt * slope_k3, 
-                                                             np.cross(M + dt * slope_k3, H, axis=1), axis=1)
-
-    new_M = M + (dt / 6) * (slope_k1 + 2 * slope_k2 + 2 * slope_k3 + slope_k4)
-    return new_M
+        # Rotation term: -gamma_ll * mu * (M x H)
+        rotate_term = -gamma_ll * MU_0 * M_cross_H
+        # Damping term: -(lambda_ll * mu / M0) * (M x (M x H))
+        damping_term = -(lambda_ll * MU_0 / M_mag) * np.cross(M_guess, M_cross_H, axis=1)
+        
+        return rotate_term + damping_term
+    
+    # --- RK4 Method Implementation ---
+    
+    # k1 (a_n): Slope at the beginning (M)
+    a_n = M_derivative(M)
+    
+    # k2 (b_n): Slope at the midpoint (M + dt/2 * k1)
+    M_k2 = M + (dt / 2) * a_n
+    b_n = M_derivative(M_k2)
+    
+    # k3 (c_n): Slope at the midpoint (M + dt/2 * k2)
+    M_k3 = M + (dt / 2) * b_n
+    c_n = M_derivative(M_k3)
+    
+    # k4 (d_n): Slope at the end (M + dt * k3)
+    M_k4 = M + dt * c_n
+    d_n = M_derivative(M_k4)
+    
+    # Final RK4 update: M_next = M + (dt/6) * (k1 + 2*k2 + 2*k3 + k4)
+    M_next = M + (dt / 6) * (a_n + 2*b_n + 2*c_n + d_n) # GPU potential
+    return M_next
 
 
 def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[float], 
