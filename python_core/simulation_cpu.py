@@ -230,9 +230,9 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
         boundary_buffer_right.append(np.copy(E_current[-2, :]))
         boundary_buffer_left.append(np.copy(E_current[1, :]))
         
-        E_current = np.copy(E_next)
-        H_current = np.copy(H_next)
-        M_current = np.copy(M_next)
+        E_current, E_next = E_next, E_current
+        H_current, H_next = H_next, H_current
+        M_current, M_next = M_next, M_current
 
         # save to return
         # save picture of parameters in time
