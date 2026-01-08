@@ -164,16 +164,17 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
     pulse_func = pulse_gen(max_E, phase_diff, pulse_width, dt, wavelength, polarization_angle, safety_factor)
 
     # defining the work space for the simulation
-    E_next = np.zeros((grid_size, 3)).astype(complex)
-    E_current = np.zeros((grid_size, 3)).astype(complex)
+    E_current = np.zeros((grid_size, 3), dtype=np.complex128)
+    E_next    = np.zeros((grid_size, 3), dtype=np.complex128)
     
+    H_current = np.zeros((grid_size, 3), dtype=np.complex128)
+    H_next    = np.zeros((grid_size, 3), dtype=np.complex128)
+    
+    M_current = np.zeros((z_indices[-1] - z_indices[0], 3), dtype=np.float64)
+    M_next    = np.zeros((z_indices[-1] - z_indices[0], 3), dtype=np.float64)
+
     boundary_buffer_right = [np.zeros((3)), np.zeros((3))]
     boundary_buffer_left = [np.zeros((3)), np.zeros((3))]
-    
-    H_next = np.zeros((grid_size, 3)).astype(complex)
-    H_current = np.zeros((grid_size, 3)).astype(complex)
-    
-    M_current = np.zeros((z_indices[-1] - z_indices[0], 3))
     
     # initial the beginning magnetization
     for i in range(len(eps_r)):
@@ -186,14 +187,14 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
     # defining returning array:
     # for space indexes
     total_saved_frames = int(total_time_steps / time_interval + 1)
-    E_space_return = np.zeros((total_saved_frames, len(save_locations), 2)).astype(complex)
-    H_space_return = np.zeros((total_saved_frames, len(save_locations), 2)).astype(complex)
-    M_space_return = np.zeros((total_saved_frames, z_indices[-1] - z_indices[0], 3)).astype(complex)
+    E_space_return = np.zeros((total_saved_frames, len(save_locations), 2), dtype=np.complex128)
+    H_space_return = np.zeros((total_saved_frames, len(save_locations), 2), dtype=np.complex128)
+    M_space_return = np.zeros((total_saved_frames, z_indices[-1] - z_indices[0], 3), dtype=np.complex128)
 
     # for time indexes
-    E_time_return = np.zeros((len(save_time_indices), grid_size, 2)).astype(complex)
-    H_time_return = np.zeros((len(save_time_indices), grid_size, 2)).astype(complex)
-    M_time_return = np.zeros((len(save_time_indices), z_indices[-1] - z_indices[0], 3)).astype(complex)
+    E_time_return = np.zeros((len(save_time_indices), grid_size, 2), dtype=np.complex128)
+    H_time_return = np.zeros((len(save_time_indices), grid_size, 2), dtype=np.complex128)
+    M_time_return = np.zeros((len(save_time_indices), z_indices[-1] - z_indices[0], 3), dtype=np.complex128)
     
     save_index_counter = 0
     
@@ -212,7 +213,7 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
         H_next[1:, 0] = H_current[1:, 0] + 0.5 * (E_current[1:, 1] - E_current[:-1, 1])        
         H_next[1:, 1] = H_current[1:, 1] - 0.5 * (E_current[1:, 0] - E_current[:-1, 0])
         
-        # LLG and change in the magnetization        
+        # LLG and change in the magnetization
         M_next = LLG_step(M_current, np.real(H_current[z_indices[0]:z_indices[-1], :]), dt, damping)
         
         if closed_system: # integration line for close system B = H + M
