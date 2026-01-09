@@ -33,28 +33,28 @@ __device__ __forceinline__ void compute_llg_derivative(
 
 // Main Kernel
 __global__ void LLG_RK4_kernel(
-    const double* __restrict__ M_curr, 
-    const double* __restrict__ H_curr, 
+    const double* __restrict__ M_curr,  // Real
+    const double* __restrict__ H_curr,  // Complex, only real part (double) needed
     double* __restrict__ M_next,       
-    int N,                            
+    int material_size,                            
     double dt,                         
     double neg_gamma_LL,  // -gamma_LL (negative)
     double neg_coeff_damp // -(gamma * alpha * factor) / M0
 ) 
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= N) return;
+    if (idx >= material_size) return;
 
     // Load initial state to registers
-    int ptr = idx * 3; 
-    
-    double Mx = M_curr[ptr];
-    double My = M_curr[ptr + 1];
-    double Mz = M_curr[ptr + 2];
+    int ptr_m = idx * 3; 
+    double Mx = M_curr[ptr_m];
+    double My = M_curr[ptr_m + 1];
+    double Mz = M_curr[ptr_m + 2];
 
-    double Hx = H_curr[ptr];
-    double Hy = H_curr[ptr + 1];
-    double Hz = H_curr[ptr + 2];
+    int ptr_h = idx * 6; // complex
+    double Hx = H_curr[ptr_h];
+    double Hy = H_curr[ptr_h + 2]; // next real part
+    double Hz = H_curr[ptr_h + 4];
 
     // RK4 Accumulators
     double kx, ky, kz;
@@ -81,7 +81,7 @@ __global__ void LLG_RK4_kernel(
 
     // Final Update
     double dt_div_6 = dt / 6.0;
-    M_next[ptr]     = Mx + dt_div_6 * sum_x;
-    M_next[ptr + 1] = My + dt_div_6 * sum_y;
-    M_next[ptr + 2] = Mz + dt_div_6 * sum_z;
+    M_next[ptr_m]     = Mx + dt_div_6 * sum_x;
+    M_next[ptr_m + 1] = My + dt_div_6 * sum_y;
+    M_next[ptr_m + 2] = Mz + dt_div_6 * sum_z;
 }
