@@ -15,7 +15,7 @@ __device__ __forceinline__ void cross_product(
 __device__ __forceinline__ void compute_llg_derivative(
     double Mx, double My, double Mz,      
     double Hx, double Hy, double Hz,      
-    double m_gamma_LL, double coeff_damp,  // Constants
+    double neg_gamma_LL, double neg_coeff_damp,  // Constants
     double &kx, double &ky, double &kz)     // Output 
 {
     // M x H
@@ -26,9 +26,9 @@ __device__ __forceinline__ void compute_llg_derivative(
     double c2x, c2y, c2z;
     cross_product(Mx, My, Mz, c1x, c1y, c1z, c2x, c2y, c2z);
 
-    kx = m_gamma_LL * c1x - coeff_damp * c2x;
-    ky = m_gamma_LL * c1y - coeff_damp * c2y;
-    kz = m_gamma_LL * c1z - coeff_damp * c2z;
+    kx = neg_gamma_LL * c1x + neg_coeff_damp * c2x;
+    ky = neg_gamma_LL * c1y + neg_coeff_damp * c2y;
+    kz = neg_gamma_LL * c1z + neg_coeff_damp * c2z;
 }
 
 // Main Kernel
@@ -38,22 +38,15 @@ __global__ void LLG_RK4_kernel(
     double* __restrict__ M_next,       
     int N,                            
     double dt,                         
-    double alpha,                      
-    double gamma,                      
-    double M0,
-    int stride 
+    double neg_gamma_LL,  // -gamma_LL (negative)
+    double neg_coeff_damp // -(gamma * alpha * factor) / M0
 ) 
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= N) return;
 
-    // Constants
-    double factor = 1.0 / (1.0 + alpha * alpha);
-    double m_gamma_LL = -gamma * factor;  // -gamma_LL (negative)
-    double coeff_damp = (gamma * alpha * factor) / M0; 
-
     // Load initial state to registers
-    int ptr = idx * stride; 
+    int ptr = idx * 3; 
     
     double Mx = M_curr[ptr];
     double My = M_curr[ptr + 1];
@@ -68,22 +61,22 @@ __global__ void LLG_RK4_kernel(
     double sum_x = 0.0, sum_y = 0.0, sum_z = 0.0;
 
     // Step 1
-    compute_llg_derivative(Mx, My, Mz, Hx, Hy, Hz, m_gamma_LL, coeff_damp, kx, ky, kz);
+    compute_llg_derivative(Mx, My, Mz, Hx, Hy, Hz, neg_gamma_LL, neg_coeff_damp, kx, ky, kz);
     sum_x += kx; sum_y += ky; sum_z += kz;
 
     // Step 2
     compute_llg_derivative(Mx + 0.5*dt*kx, My + 0.5*dt*ky, Mz + 0.5*dt*kz, 
-                           Hx, Hy, Hz, m_gamma_LL, coeff_damp, kx, ky, kz); 
+                           Hx, Hy, Hz, neg_gamma_LL, neg_coeff_damp, kx, ky, kz); 
     sum_x += 2.0*kx; sum_y += 2.0*ky; sum_z += 2.0*kz;
 
     // Step 3
     compute_llg_derivative(Mx + 0.5*dt*kx, My + 0.5*dt*ky, Mz + 0.5*dt*kz, 
-                           Hx, Hy, Hz, m_gamma_LL, coeff_damp, kx, ky, kz);
+                           Hx, Hy, Hz, neg_gamma_LL, neg_coeff_damp, kx, ky, kz);
     sum_x += 2.0*kx; sum_y += 2.0*ky; sum_z += 2.0*kz;
 
     // Step 4
     compute_llg_derivative(Mx + dt*kx, My + dt*ky, Mz + dt*kz, 
-                           Hx, Hy, Hz, m_gamma_LL, coeff_damp, kx, ky, kz);
+                           Hx, Hy, Hz, neg_gamma_LL, neg_coeff_damp, kx, ky, kz);
     sum_x += kx; sum_y += ky; sum_z += kz;
 
     // Final Update
