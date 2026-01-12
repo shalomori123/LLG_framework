@@ -59,18 +59,19 @@ __global__ void LLG_RK4_kernel(
     // RK4 Accumulators
     double kx, ky, kz;
     double sum_x = 0.0, sum_y = 0.0, sum_z = 0.0;
+    double half_dt = 0.5*dt;
 
     // Step 1
     compute_llg_derivative(Mx, My, Mz, Hx, Hy, Hz, neg_gamma_LL, neg_coeff_damp, kx, ky, kz);
     sum_x += kx; sum_y += ky; sum_z += kz;
 
     // Step 2
-    compute_llg_derivative(Mx + 0.5*dt*kx, My + 0.5*dt*ky, Mz + 0.5*dt*kz, 
+    compute_llg_derivative(Mx + half_dt*kx, My + half_dt*ky, Mz + half_dt*kz, 
                            Hx, Hy, Hz, neg_gamma_LL, neg_coeff_damp, kx, ky, kz); 
     sum_x += 2.0*kx; sum_y += 2.0*ky; sum_z += 2.0*kz;
 
     // Step 3
-    compute_llg_derivative(Mx + 0.5*dt*kx, My + 0.5*dt*ky, Mz + 0.5*dt*kz, 
+    compute_llg_derivative(Mx + half_dt*kx, My + half_dt*ky, Mz + half_dt*kz, 
                            Hx, Hy, Hz, neg_gamma_LL, neg_coeff_damp, kx, ky, kz);
     sum_x += 2.0*kx; sum_y += 2.0*ky; sum_z += 2.0*kz;
 
