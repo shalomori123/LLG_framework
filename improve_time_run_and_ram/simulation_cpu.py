@@ -33,7 +33,7 @@ def pulse_gen(max_feald: float, fea : float, FWHM: float, dt : float ,lamda = 80
     turn_m= np.array([np.cos(teta) , -np.sin(teta), np.sin(teta) ,np.cos(teta) ])
     turn_m = turn_m.reshape((2,2))
     pulse = max_feald * turn_m @ np.array([1 ,np.exp(-fea*1j)]).reshape(2)
-    sigma = ((0.5/np.log(2))** 0.5) * FWHM
+    sigma = (0.5/(np.log(2)** 0.5)) * FWHM
     peak_location = start_sefty*sigma
 
     def out_pulse(n: int) -> np.array:
@@ -103,7 +103,7 @@ def simulation(z_ind: list[int], e_r : list[float], sigma: list[float], alpha: f
 
     # system defntion 
     dz = 2*c *dt
-    lenz= z_ind[-1] + int(lamda/dz)
+    lenz= z_ind[-1] + min(int(lamda/dz), int(0.5*(z_ind[-1]-z_ind[0])))
  
 
     # matrial proprty
@@ -144,8 +144,7 @@ def simulation(z_ind: list[int], e_r : list[float], sigma: list[float], alpha: f
     time_save = int(simulation_time_steps/time_interval + 1)
     E_space_return = np.zeros((time_save, len(save_location), 2)).astype(complex)
     H_space_return = np.zeros((time_save, len(save_location), 2)).astype(complex)
-    ms_save_indxes = [i - z_ind[0] for i in save_location if (i >=z_ind[0] and i< z_ind[-1])] # find the relvenr indx in for msi
-    msi_space_return = np.zeros((time_save, len(ms_save_indxes),3)).astype(complex)
+    msi_space_return = np.zeros((time_save, z_ind[-1]-z_ind[0],3)).astype(complex)
 
     # for time indxes
     E_time_return = np.zeros((len(save_time), lenz, 2)).astype(complex)
@@ -196,11 +195,9 @@ def simulation(z_ind: list[int], e_r : list[float], sigma: list[float], alpha: f
         # save the parameters in speceific location in all times
         if not n % time_interval :
             p =int(n/time_interval)
-            for save_ind, space_ind  in enumerate(save_location):
-                H_space_return[p, save_ind, :] = H_current[space_ind, :2]
-                E_space_return[p, save_ind, :] = E_current[space_ind, :2]
-            for save_ind, space_ind  in enumerate(ms_save_indxes):    
-                msi_space_return[p, save_ind, :] = ms_i_current[space_ind, :]
+            H_space_return[p, :, :] = H_current[save_location, :2]
+            E_space_return[p, :, :] = E_current[save_location, :2]
+            msi_space_return[p, :, :] = ms_i_current
     # time_r = H_time_return, E_time_return, msi_time_return
     # spece_r = H_space_return, E_space_return, msi_space_return
     all_data = {
