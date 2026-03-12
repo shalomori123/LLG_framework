@@ -6,7 +6,7 @@ EPSILON_0 = 8.854e-12  # [F/m]
 MU_0 = 4 * np.pi * 1e-7  # [H/m]
 SPEED_OF_LIGHT = 1 / (EPSILON_0 * MU_0) ** 0.5
 IMPEDANCE = (MU_0 / EPSILON_0) ** 0.5
-My_var=0
+
 ELEMENTARY_CHARGE = 1.60217646e-19  # Elementary charge [Coulombs]
 LANDAU_FACTOR = 2  # Landau factor
 ELECTRON_MASS = 9.1093821545e-31  # Electron mass [kg]
