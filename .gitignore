@@ -1,3 +1,6 @@
 ./data/
 ./simulation_result/
 ./compare_Hx_open_close.avi
+*/cupy_env
+*/__pycache__
+
