@@ -1,7 +1,7 @@
 #include <cuda_runtime.h>
 
 #define WARPS_PER_BLOCK 32
-#define BOUND 0.0f
+#define BOUND 0.0f // TODO: ABC logic to the bounderies
 
 __device__ __forceinline__ 
 void get_left_stencil(float curr, float& left, float* warp_edges, 
@@ -70,7 +70,7 @@ __global__ void maxwell_kernel(float* E, float* H, int N, float coeff) {
     float E_curr = E[idx];
     float H_curr = H[idx];
     float H_left, E_right; // Register neighbors
-    get_left_stencil(H_curr, H_left, warp_edges, H, N, idx);
+    get_left_stencil(H_curr, H_left, warp_edges, H, idx);
     get_right_stencil(E_curr, E_right, warp_edges, E, N, idx);
 
     // Physics
