@@ -1,17 +1,19 @@
 #include <cuda_runtime.h>
+#include <cuComplex.h>
 
 #define WARPS_PER_BLOCK 32
-#define BOUND 0.0f // TODO: ABC logic to the bounderies
+#define BOUND make_float2(0.0f, 0.0f) // TODO: ABC logic to the bounderies
 #define CLOSED_SYSTEM 1
 
 __device__ __forceinline__ 
-void get_left_stencil(float curr, float& left, float* warp_edges, 
-                         float* global_data, int idx) {
+void get_left_stencil(float2 curr, float2& left, float2* warp_edges, 
+                         float2* global_data, int stride, int idx) {
     const int lane_id = threadIdx.x % warpSize;
     const int warp_id = threadIdx.x / warpSize;
 
     // Inside a warp: shuffle
-    left = __shfl_up_sync(0xffffffff, curr, 1);
+    left.x = __shfl_up_sync(0xffffffff, curr.x, 1);
+    left.y = __shfl_up_sync(0xffffffff, curr.y, 1);
 
     // Export right boundary to Shared MEM
     if (lane_id == warpSize - 1) warp_edges[warp_id] = curr;
@@ -22,9 +24,9 @@ void get_left_stencil(float curr, float& left, float* warp_edges,
         if (warp_id > 0) {
             left = warp_edges[warp_id - 1]; // From previous warp
         } else if (idx > 0) {
-            left = global_data[idx - 1];    // Global boundary check
+            left = global_data[(idx - 1) * stride];    // Global boundary check
         } else {
-            left = BOUND;                   // Padding
+            left = BOUND;                    // Padding
         }
     }
 
@@ -33,13 +35,14 @@ void get_left_stencil(float curr, float& left, float* warp_edges,
 }
 
 __device__ __forceinline__ 
-void get_right_stencil(float curr, float& right, float* warp_edges, 
-                          float* global_data, int N, int idx) {
+void get_right_stencil(float2 curr, float2& right, float2* warp_edges, 
+                          float2* global_data, int stride, int N, int idx) {
     const int lane_id = threadIdx.x % warpSize;
     const int warp_id = threadIdx.x / warpSize;
 
     // Inside a warp: shuffle
-    right = __shfl_down_sync(0xffffffff, curr, 1);
+    right.x = __shfl_down_sync(0xffffffff, curr.x, 1);
+    right.y = __shfl_down_sync(0xffffffff, curr.y, 1);
 
     // Export left boundary to Shared MEM
     if (lane_id == 0) warp_edges[warp_id] = curr;
@@ -50,9 +53,9 @@ void get_right_stencil(float curr, float& right, float* warp_edges,
         if (warp_id < (blockDim.x / warpSize) - 1) {
             right = warp_edges[warp_id + 1]; // From next warp
         } else if (idx < N - 1) {
-            right = global_data[idx + 1];    // Global boundary check
+            right = global_data[(idx + 1) * stride];    // Global boundary check
         } else {
-            right = BOUND;                   // Padding
+            right = BOUND;                    // Padding
         }
     }
 
@@ -60,28 +63,30 @@ void get_right_stencil(float curr, float& right, float* warp_edges,
     __syncthreads();
 }
 
-__global__ void magnetic_kernel(float* E, float* H, int N, float coeff) {
+__global__ void magnetic_kernel(float2* E, float2* H, int N, float coeff) {
     // Shared boundary arrays
-    __shared__ float warp_edges[WARPS_PER_BLOCK];
+    __shared__ float2 warp_edges[WARPS_PER_BLOCK];
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= N) return;
 
     // GET H FIELD
-    float* Hx_curr = H + 3*idx;
-    float* Hy_curr = H + 3*idx + 1;
-    float* Hz_curr = H + 3*idx + 2;
+    float2* Hx_curr = H + 3*idx;
+    float2* Hy_curr = H + 3*idx + 1;
+    float2* Hz_curr = H + 3*idx + 2;
 
     // calculate E field
-    float Ex_curr = E[3*idx];
-    float Ey_curr = E[3*idx + 1];
-    float Ex_right, Ey_right; // Register neighbors
-    get_right_stencil(Ex_curr, Ex_right, warp_edges, E, N, idx);
-    get_right_stencil(Ey_curr, Ey_right, warp_edges, E, N, idx);
+    float2 Ex_curr = E[3*idx];
+    float2 Ey_curr = E[3*idx + 1];
+    float2 Ex_right, Ey_right; // Register neighbors
+    get_right_stencil(Ex_curr, Ex_right, warp_edges, E + 0, 3, N, idx);
+    get_right_stencil(Ey_curr, Ey_right, warp_edges, E + 1, 3, N, idx);
 
     // Faraday's law
-    *Hx_curr += coeff * (Ey_right - Ey_curr); // Hx affected by Ey
-    *Hy_curr += coeff * (Ex_right - Ex_curr); // Hy affected by Ex
+    Hx_curr->x += coeff * (Ey_right.x - Ey_curr.x); // Hx affected by Ey
+    Hx_curr->y += coeff * (Ey_right.y - Ey_curr.y);
+    Hy_curr->x += coeff * (Ex_right.x - Ex_curr.x); // Hy affected by Ex
+    Hy_curr->y += coeff * (Ex_right.y - Ex_curr.y);
 
     // LLG interaction between H and M
     // TODO: call LLG_RK4_kernel (which shouldn't be seperated kernel) and adapt parameters
@@ -92,27 +97,29 @@ __global__ void magnetic_kernel(float* E, float* H, int N, float coeff) {
     #endif
 }
 
-__global__ void electric_kernel(float* E, float* H, int N, float coeff) {
+__global__ void electric_kernel(float2* E, float2* H, int N, float coeff) {
     // Shared boundary arrays
-    __shared__ float warp_edges[WARPS_PER_BLOCK];
+    __shared__ float2 warp_edges[WARPS_PER_BLOCK];
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= N) return;
 
     // GET E FIELD
-    float* Ex_curr = E + 3*idx;
-    float* Ey_curr = E + 3*idx + 1;
+    float2* Ex_curr = E + 3*idx;
+    float2* Ey_curr = E + 3*idx + 1;
 
     // calculate H field
-    float Hx_curr = H[3*idx];
-    float Hy_curr = H[3*idx + 1];
-    float Hx_left, Hy_left; // Register neighbors
-    get_left_stencil(Hx_curr, Hx_left, warp_edges, H, idx);
-    get_left_stencil(Hy_curr, Hy_left, warp_edges, H, idx);
+    float2 Hx_curr = H[3*idx];
+    float2 Hy_curr = H[3*idx + 1];
+    float2 Hx_left, Hy_left; // Register neighbors
+    get_left_stencil(Hx_curr, Hx_left, warp_edges, H + 0, 3, idx);
+    get_left_stencil(Hy_curr, Hy_left, warp_edges, H + 1, 3, idx);
 
     // Faraday's law
-    *Ex_curr += coeff * (Hy_left - Hy_curr); // Ex affected by Hy
-    *Ey_curr += coeff * (Hx_left - Hx_curr); // Ey affected by Hx
+    Ex_curr->x += coeff * (Hy_left.x - Hy_curr.x); // Ex affected by Hy
+    Ex_curr->y += coeff * (Hy_left.y - Hy_curr.y);
+    Ey_curr->x += coeff * (Hx_left.x - Hx_curr.x); // Ey affected by Hx
+    Ey_curr->y += coeff * (Hx_left.y - Hx_curr.y);
 
     // TODO: add ABC logic
 }
