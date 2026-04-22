@@ -1,4 +1,5 @@
 #include <cuda_runtime.h>
+#include <cuComplex.h>
 
 // Helper: Cross Product (Register-only)
 __device__ __forceinline__ void cross_product(
@@ -33,9 +34,15 @@ __device__ __forceinline__ void compute_llg_derivative(
 
 // Main Kernel
 __global__ void LLG_RK4_kernel(
-    const float* __restrict__ M_curr,  // Real
-    const float* __restrict__ H_curr,  // Complex, only real part (float) needed
-    float* __restrict__ M_next,       
+    const float* __restrict__ Mx_curr,
+    const float* __restrict__ My_curr,
+    const float* __restrict__ Mz_curr,
+    const float2* __restrict__ Hx_curr, 
+    const float2* __restrict__ Hy_curr, 
+    const float2* __restrict__ Hz_curr, 
+    float* __restrict__ Mx_next,       
+    float* __restrict__ My_next,       
+    float* __restrict__ Mz_next,       
     int material_size,                            
     float dt,                         
     float neg_gamma_LL,  // -gamma_LL (negative)
@@ -46,20 +53,19 @@ __global__ void LLG_RK4_kernel(
     if (idx >= material_size) return;
 
     // Load initial state to registers
-    int ptr_m = idx * 3; 
-    float Mx = M_curr[ptr_m];
-    float My = M_curr[ptr_m + 1];
-    float Mz = M_curr[ptr_m + 2];
+    float Mx = Mx_curr[idx];
+    float My = My_curr[idx];
+    float Mz = Mz_curr[idx];
 
-    int ptr_h = idx * 6; // complex
-    float Hx = H_curr[ptr_h];
-    float Hy = H_curr[ptr_h + 2]; // next real part
-    float Hz = H_curr[ptr_h + 4];
+    // Complex H field, M only interact with the real part
+    float Hx = Hx_curr[idx].x;
+    float Hy = Hy_curr[idx].x;
+    float Hz = Hz_curr[idx].x;
 
     // RK4 Accumulators
     float kx, ky, kz;
-    float sum_x = 0.0, sum_y = 0.0, sum_z = 0.0;
-    float half_dt = 0.5*dt;
+    float sum_x = 0.0f, sum_y = 0.0f, sum_z = 0.0f;
+    float half_dt = 0.5f * dt;
 
     // Step 1
     compute_llg_derivative(Mx, My, Mz, Hx, Hy, Hz, neg_gamma_LL, neg_coeff_damp, kx, ky, kz);
@@ -68,12 +74,12 @@ __global__ void LLG_RK4_kernel(
     // Step 2
     compute_llg_derivative(Mx + half_dt*kx, My + half_dt*ky, Mz + half_dt*kz, 
                            Hx, Hy, Hz, neg_gamma_LL, neg_coeff_damp, kx, ky, kz); 
-    sum_x += 2.0*kx; sum_y += 2.0*ky; sum_z += 2.0*kz;
+    sum_x += 2.0f*kx; sum_y += 2.0f*ky; sum_z += 2.0f*kz;
 
     // Step 3
     compute_llg_derivative(Mx + half_dt*kx, My + half_dt*ky, Mz + half_dt*kz, 
                            Hx, Hy, Hz, neg_gamma_LL, neg_coeff_damp, kx, ky, kz);
-    sum_x += 2.0*kx; sum_y += 2.0*ky; sum_z += 2.0*kz;
+    sum_x += 2.0f*kx; sum_y += 2.0f*ky; sum_z += 2.0f*kz;
 
     // Step 4
     compute_llg_derivative(Mx + dt*kx, My + dt*ky, Mz + dt*kz, 
@@ -81,8 +87,8 @@ __global__ void LLG_RK4_kernel(
     sum_x += kx; sum_y += ky; sum_z += kz;
 
     // Final Update
-    float dt_div_6 = dt / 6.0;
-    M_next[ptr_m]     = Mx + dt_div_6 * sum_x;
-    M_next[ptr_m + 1] = My + dt_div_6 * sum_y;
-    M_next[ptr_m + 2] = Mz + dt_div_6 * sum_z;
+    float dt_div_6 = dt / 6.0f;
+    Mx_next[idx] = Mx + dt_div_6 * sum_x;
+    My_next[idx] = My + dt_div_6 * sum_y;
+    Mz_next[idx] = Mz + dt_div_6 * sum_z;
 }

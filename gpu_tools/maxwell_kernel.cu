@@ -7,7 +7,7 @@
 
 __device__ __forceinline__ 
 void get_left_stencil(float2 curr, float2& left, float2* warp_edges, 
-                         float2* global_data, int stride, int idx) {
+                         float2* global_data, int idx) {
     const int lane_id = threadIdx.x % warpSize;
     const int warp_id = threadIdx.x / warpSize;
 
@@ -24,9 +24,9 @@ void get_left_stencil(float2 curr, float2& left, float2* warp_edges,
         if (warp_id > 0) {
             left = warp_edges[warp_id - 1]; // From previous warp
         } else if (idx > 0) {
-            left = global_data[(idx - 1) * stride];    // Global boundary check
+            left = global_data[idx - 1];    // Global boundary check
         } else {
-            left = BOUND;                    // Padding
+            left = BOUND;                   // Padding
         }
     }
 
@@ -36,7 +36,7 @@ void get_left_stencil(float2 curr, float2& left, float2* warp_edges,
 
 __device__ __forceinline__ 
 void get_right_stencil(float2 curr, float2& right, float2* warp_edges, 
-                          float2* global_data, int stride, int N, int idx) {
+                          float2* global_data, int N, int idx) {
     const int lane_id = threadIdx.x % warpSize;
     const int warp_id = threadIdx.x / warpSize;
 
@@ -53,9 +53,9 @@ void get_right_stencil(float2 curr, float2& right, float2* warp_edges,
         if (warp_id < (blockDim.x / warpSize) - 1) {
             right = warp_edges[warp_id + 1]; // From next warp
         } else if (idx < N - 1) {
-            right = global_data[(idx + 1) * stride];    // Global boundary check
+            right = global_data[idx + 1];    // Global boundary check
         } else {
-            right = BOUND;                    // Padding
+            right = BOUND;                   // Padding
         }
     }
 
@@ -63,7 +63,8 @@ void get_right_stencil(float2 curr, float2& right, float2* warp_edges,
     __syncthreads();
 }
 
-__global__ void magnetic_kernel(float2* E, float2* H, int N, float coeff) {
+__global__ void magnetic_kernel(float2* Ex, float2* Ey, float2* Hx, float2* Hy,
+                                int N, float coeff) {
     // Shared boundary arrays
     __shared__ float2 warp_edges[WARPS_PER_BLOCK];
 
@@ -71,16 +72,17 @@ __global__ void magnetic_kernel(float2* E, float2* H, int N, float coeff) {
     if (idx >= N) return;
 
     // GET H FIELD
-    float2* Hx_curr = H + 3*idx;
-    float2* Hy_curr = H + 3*idx + 1;
-    float2* Hz_curr = H + 3*idx + 2;
+    float2* Hx_curr = Hx + idx;
+    float2* Hy_curr = Hy + idx;
 
     // calculate E field
-    float2 Ex_curr = E[3*idx];
-    float2 Ey_curr = E[3*idx + 1];
+    float2 Ex_curr = Ex[idx];
+    float2 Ey_curr = Ey[idx];
     float2 Ex_right, Ey_right; // Register neighbors
-    get_right_stencil(Ex_curr, Ex_right, warp_edges, E + 0, 3, N, idx);
-    get_right_stencil(Ey_curr, Ey_right, warp_edges, E + 1, 3, N, idx);
+    
+    // Pass the dedicated SoA arrays instead of base pointer + offset
+    get_right_stencil(Ex_curr, Ex_right, warp_edges, Ex, N, idx);
+    get_right_stencil(Ey_curr, Ey_right, warp_edges, Ey, N, idx);
 
     // Faraday's law
     Hx_curr->x += coeff * (Ey_right.x - Ey_curr.x); // Hx affected by Ey
@@ -97,7 +99,8 @@ __global__ void magnetic_kernel(float2* E, float2* H, int N, float coeff) {
     #endif
 }
 
-__global__ void electric_kernel(float2* E, float2* H, int N, float coeff) {
+__global__ void electric_kernel(float2* Ex, float2* Ey, float2* Hx, float2* Hy,
+                                int N, float coeff) {
     // Shared boundary arrays
     __shared__ float2 warp_edges[WARPS_PER_BLOCK];
 
@@ -105,17 +108,19 @@ __global__ void electric_kernel(float2* E, float2* H, int N, float coeff) {
     if (idx >= N) return;
 
     // GET E FIELD
-    float2* Ex_curr = E + 3*idx;
-    float2* Ey_curr = E + 3*idx + 1;
+    float2* Ex_curr = Ex + idx;
+    float2* Ey_curr = Ey + idx;
 
     // calculate H field
-    float2 Hx_curr = H[3*idx];
-    float2 Hy_curr = H[3*idx + 1];
+    float2 Hx_curr = Hx[idx];
+    float2 Hy_curr = Hy[idx];
     float2 Hx_left, Hy_left; // Register neighbors
-    get_left_stencil(Hx_curr, Hx_left, warp_edges, H + 0, 3, idx);
-    get_left_stencil(Hy_curr, Hy_left, warp_edges, H + 1, 3, idx);
+    
+    // Pass the dedicated SoA arrays instead of base pointer + offset
+    get_left_stencil(Hx_curr, Hx_left, warp_edges, Hx, idx);
+    get_left_stencil(Hy_curr, Hy_left, warp_edges, Hy, idx);
 
-    // Faraday's law
+    // Ampere's law
     Ex_curr->x += coeff * (Hy_left.x - Hy_curr.x); // Ex affected by Hy
     Ex_curr->y += coeff * (Hy_left.y - Hy_curr.y);
     Ey_curr->x += coeff * (Hx_left.x - Hx_curr.x); // Ey affected by Hx
