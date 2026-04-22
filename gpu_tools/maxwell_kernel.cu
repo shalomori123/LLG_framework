@@ -63,26 +63,25 @@ void get_right_stencil(float2 curr, float2& right, float2* warp_edges,
     __syncthreads();
 }
 
-__global__ void magnetic_kernel(float2* Ex, float2* Ey, float2* Hx, float2* Hy,
-                                int N, float coeff) {
+__global__ void magnetic_kernel(float2* E, float2* H, int N, float coeff) {
     // Shared boundary arrays
     __shared__ float2 warp_edges[WARPS_PER_BLOCK];
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= N) return;
+    int y_idx = N + idx;
 
     // GET H FIELD
-    float2* Hx_curr = Hx + idx;
-    float2* Hy_curr = Hy + idx;
+    float2* Hx_curr = H + idx;
+    float2* Hy_curr = H + y_idx;
 
     // calculate E field
-    float2 Ex_curr = Ex[idx];
-    float2 Ey_curr = Ey[idx];
-    float2 Ex_right, Ey_right; // Register neighbors
+    float2 Ex_curr = E[idx];
+    float2 Ey_curr = E[y_idx];
+    float2 Ex_right, Ey_right; 
     
-    // Pass the dedicated SoA arrays instead of base pointer + offset
-    get_right_stencil(Ex_curr, Ex_right, warp_edges, Ex, N, idx);
-    get_right_stencil(Ey_curr, Ey_right, warp_edges, Ey, N, idx);
+    get_right_stencil(Ex_curr, Ex_right, warp_edges, E, N, idx);
+    get_right_stencil(Ey_curr, Ey_right, warp_edges, E, 2*N, y_idx);
 
     // Faraday's law
     Hx_curr->x += coeff * (Ey_right.x - Ey_curr.x); // Hx affected by Ey
@@ -99,27 +98,26 @@ __global__ void magnetic_kernel(float2* Ex, float2* Ey, float2* Hx, float2* Hy,
     #endif
 }
 
-__global__ void electric_kernel(float2* Ex, float2* Ey, float2* Hx, float2* Hy,
-                                float2* abc_left, float2* abc_right,
-                                int N, float coeff) {
+__global__ void electric_kernel(float2* E, float2* H, int N, float coeff,
+                                float2* abc_left, float2* abc_right) {
     // Shared boundary arrays
     __shared__ float2 warp_edges[WARPS_PER_BLOCK];
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= N) return;
+    int y_idx = N + idx;
 
     // GET E FIELD
-    float2* Ex_curr = Ex + idx;
-    float2* Ey_curr = Ey + idx;
+    float2* Ex_curr = E + idx;
+    float2* Ey_curr = E + y_idx;
 
     // calculate H field
-    float2 Hx_curr = Hx[idx];
-    float2 Hy_curr = Hy[idx];
-    float2 Hx_left, Hy_left; // Register neighbors
+    float2 Hx_curr = H[idx];
+    float2 Hy_curr = H[y_idx];
+    float2 Hx_left, Hy_left; 
     
-    // Pass the dedicated SoA arrays instead of base pointer + offset
-    get_left_stencil(Hx_curr, Hx_left, warp_edges, Hx, idx);
-    get_left_stencil(Hy_curr, Hy_left, warp_edges, Hy, idx);
+    get_left_stencil(Hx_curr, Hx_left, warp_edges, H, idx);
+    get_left_stencil(Hy_curr, Hy_left, warp_edges, H, y_idx);
 
     // Ampere's law
     Ex_curr->x += coeff * (Hy_left.x - Hy_curr.x); // Ex affected by Hy

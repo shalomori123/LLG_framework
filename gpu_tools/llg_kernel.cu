@@ -34,33 +34,29 @@ __device__ __forceinline__ void compute_llg_derivative(
 
 // Main Kernel
 __global__ void LLG_RK4_kernel(
-    const float* __restrict__ Mx_curr,
-    const float* __restrict__ My_curr,
-    const float* __restrict__ Mz_curr,
-    const float2* __restrict__ Hx_curr, 
-    const float2* __restrict__ Hy_curr, 
-    const float2* __restrict__ Hz_curr, 
-    float* __restrict__ Mx_next,       
-    float* __restrict__ My_next,       
-    float* __restrict__ Mz_next,       
-    int material_size,                            
+    const float* __restrict__ M_curr,
+    const float2* __restrict__ H_curr, 
+    float* __restrict__ M_next,       
+    int material_start, int material_end, int N,
     float dt,                         
     float neg_gamma_LL,  // -gamma_LL (negative)
     float neg_coeff_damp // -(gamma * alpha * factor) / M0
 ) 
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= material_size) return;
+    if (idx >= material_end || idx < material_start) return;
 
-    // Load initial state to registers
-    float Mx = Mx_curr[idx];
-    float My = My_curr[idx];
-    float Mz = Mz_curr[idx];
+    int material_size = material_end - material_start;
+
+    // Load initial state
+    float Mx = M_curr[idx - material_start];
+    float My = M_curr[material_size + idx - material_start];
+    float Mz = M_curr[2 * material_size + idx - material_start];
 
     // Complex H field, M only interact with the real part
-    float Hx = Hx_curr[idx].x;
-    float Hy = Hy_curr[idx].x;
-    float Hz = Hz_curr[idx].x;
+    float Hx = H_curr[idx].x;
+    float Hy = H_curr[N + idx].x;
+    float Hz = H_curr[2 * N + idx].x;
 
     // RK4 Accumulators
     float kx, ky, kz;
@@ -88,7 +84,7 @@ __global__ void LLG_RK4_kernel(
 
     // Final Update
     float dt_div_6 = dt / 6.0f;
-    Mx_next[idx] = Mx + dt_div_6 * sum_x;
-    My_next[idx] = My + dt_div_6 * sum_y;
-    Mz_next[idx] = Mz + dt_div_6 * sum_z;
+    M_next[idx - material_start]                     = Mx + dt_div_6 * sum_x;
+    M_next[material_size + idx - material_start]     = My + dt_div_6 * sum_y;
+    M_next[2 * material_size + idx - material_start] = Mz + dt_div_6 * sum_z;
 }
