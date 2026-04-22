@@ -2,6 +2,7 @@
 
 #define WARPS_PER_BLOCK 32
 #define BOUND 0.0f // TODO: ABC logic to the bounderies
+#define CLOSED_SYSTEM 1
 
 __device__ __forceinline__ 
 void get_left_stencil(float curr, float& left, float* warp_edges, 
@@ -59,22 +60,59 @@ void get_right_stencil(float curr, float& right, float* warp_edges,
     __syncthreads();
 }
 
-__global__ void maxwell_kernel(float* E, float* H, int N, float coeff) {
+__global__ void magnetic_kernel(float* E, float* H, int N, float coeff) {
     // Shared boundary arrays
     __shared__ float warp_edges[WARPS_PER_BLOCK];
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= N) return;
 
-    // GET FIELDS
-    float E_curr = E[idx];
-    float H_curr = H[idx];
-    float H_left, E_right; // Register neighbors
-    get_left_stencil(H_curr, H_left, warp_edges, H, idx);
-    get_right_stencil(E_curr, E_right, warp_edges, E, N, idx);
+    // GET H FIELD
+    float* Hx_curr = H + 3*idx;
+    float* Hy_curr = H + 3*idx + 1;
+    float* Hz_curr = H + 3*idx + 2;
 
-    // Physics
-    E[idx] += coeff * (H_left - H_curr);
-    H[idx] += coeff * (E_right - E_curr);
-    // ...
+    // calculate E field
+    float Ex_curr = E[3*idx];
+    float Ey_curr = E[3*idx + 1];
+    float Ex_right, Ey_right; // Register neighbors
+    get_right_stencil(Ex_curr, Ex_right, warp_edges, E, N, idx);
+    get_right_stencil(Ey_curr, Ey_right, warp_edges, E, N, idx);
+
+    // Faraday's law
+    *Hx_curr += coeff * (Ey_right - Ey_curr); // Hx affected by Ey
+    *Hy_curr += coeff * (Ex_right - Ex_curr); // Hy affected by Ex
+
+    // LLG interaction between H and M
+    // TODO: call LLG_RK4_kernel (which shouldn't be seperated kernel) and adapt parameters
+
+    // Coupling - add M to H
+    #ifdef CLOSED_SYSTEM
+        // H_next[material_begin:material_end, :] += M_current - M_next
+    #endif
+}
+
+__global__ void electric_kernel(float* E, float* H, int N, float coeff) {
+    // Shared boundary arrays
+    __shared__ float warp_edges[WARPS_PER_BLOCK];
+
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= N) return;
+
+    // GET E FIELD
+    float* Ex_curr = E + 3*idx;
+    float* Ey_curr = E + 3*idx + 1;
+
+    // calculate H field
+    float Hx_curr = H[3*idx];
+    float Hy_curr = H[3*idx + 1];
+    float Hx_left, Hy_left; // Register neighbors
+    get_left_stencil(Hx_curr, Hx_left, warp_edges, H, idx);
+    get_left_stencil(Hy_curr, Hy_left, warp_edges, H, idx);
+
+    // Faraday's law
+    *Ex_curr += coeff * (Hy_left - Hy_curr); // Ex affected by Hy
+    *Ey_curr += coeff * (Hx_left - Hx_curr); // Ey affected by Hx
+
+    // TODO: add ABC logic
 }
