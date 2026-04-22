@@ -2,7 +2,7 @@
 #include <cuComplex.h>
 
 #define WARPS_PER_BLOCK 32
-#define BOUND make_float2(0.0f, 0.0f) // TODO: ABC logic to the bounderies
+#define BOUNDERY make_float2(0.0f, 0.0f)
 #define CLOSED_SYSTEM 1
 
 __device__ __forceinline__ 
@@ -26,7 +26,7 @@ void get_left_stencil(float2 curr, float2& left, float2* warp_edges,
         } else if (idx > 0) {
             left = global_data[idx - 1];    // Global boundary check
         } else {
-            left = BOUND;                   // Padding
+            left = BOUNDERY;                // Padding
         }
     }
 
@@ -55,7 +55,7 @@ void get_right_stencil(float2 curr, float2& right, float2* warp_edges,
         } else if (idx < N - 1) {
             right = global_data[idx + 1];    // Global boundary check
         } else {
-            right = BOUND;                   // Padding
+            right = BOUNDERY;                // Padding
         }
     }
 
@@ -125,7 +125,7 @@ __global__ void electric_kernel(float2* E, float2* H, int N, float coeff,
     Ey_curr->x += coeff * (Hx_left.x - Hx_curr.x); // Ey affected by Hx
     Ey_curr->y += coeff * (Hx_left.y - Hx_curr.y);
 
-    // ABC boundry condition logic [Sulliven pg. 4]
+    // ABC boundry condition logic [Sullivan 1.3 pg. 4]
     if (idx == 1) {
         abc_left[0] = *Ex_curr;
         abc_left[1] = *Ey_curr;
