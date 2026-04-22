@@ -100,6 +100,7 @@ __global__ void magnetic_kernel(float2* Ex, float2* Ey, float2* Hx, float2* Hy,
 }
 
 __global__ void electric_kernel(float2* Ex, float2* Ey, float2* Hx, float2* Hy,
+                                float2* abc_left, float2* abc_right,
                                 int N, float coeff) {
     // Shared boundary arrays
     __shared__ float2 warp_edges[WARPS_PER_BLOCK];
@@ -126,5 +127,20 @@ __global__ void electric_kernel(float2* Ex, float2* Ey, float2* Hx, float2* Hy,
     Ey_curr->x += coeff * (Hx_left.x - Hx_curr.x); // Ey affected by Hx
     Ey_curr->y += coeff * (Hx_left.y - Hx_curr.y);
 
-    // TODO: add ABC logic
+    // ABC boundry condition logic [Sulliven pg. 4]
+    if (idx == 1) {
+        abc_left[0] = *Ex_curr;
+        abc_left[1] = *Ey_curr;
+    } else if (idx == N - 2) {
+        abc_right[0] = *Ex_curr;
+        abc_right[1] = *Ey_curr;
+    }
+
+    if (idx == 0) {
+        *Ex_curr = abc_left[0];
+        *Ey_curr = abc_left[1];
+    } else if (idx == N - 1) {
+        *Ex_curr = abc_right[0];
+        *Ey_curr = abc_right[1];
+    }
 }
