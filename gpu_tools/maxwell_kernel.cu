@@ -1,6 +1,8 @@
 #include <cuda_runtime.h>
 #include <cuComplex.h>
 
+#include "llg_kernel.cu"
+
 #define WARPS_PER_BLOCK 32
 #define ZERO make_float2(0.0f, 0.0f)
 #define CLOSED_SYSTEM 1
@@ -63,7 +65,13 @@ void get_right_stencil(float2 curr, float2& right, float2* warp_edges,
     __syncthreads();
 }
 
-__global__ void magnetic_kernel(float2* E, float2* H, int N, float coeff) {
+__global__ void magnetic_kernel(
+    float2* E, float2* H, 
+    float* M_curr, float* M_next,
+    int N, float coeff,                     // Maxwell params
+    int material_start, int material_end,   // LLG spatial bounds
+    float dt, float neg_gamma_LL, float neg_coeff_damp // LLG constants
+) {
     // Shared boundary arrays
     __shared__ float2 warp_edges[WARPS_PER_BLOCK];
 
@@ -81,7 +89,7 @@ __global__ void magnetic_kernel(float2* E, float2* H, int N, float coeff) {
     float2 Ex_right, Ey_right; // Register neighbors
     
     get_right_stencil(Ex_curr, Ex_right, warp_edges, E, N, idx);
-    get_right_stencil(Ey_curr, Ey_right, warp_edges, E, N, y_idx);
+    get_right_stencil(Ey_curr, Ey_right, warp_edges, E, 2*N, y_idx);
 
     if (valid) {
         // Faraday's law
@@ -91,7 +99,9 @@ __global__ void magnetic_kernel(float2* E, float2* H, int N, float coeff) {
         Hy_curr->y += coeff * (Ex_right.y - Ex_curr.y);
 
         // LLG interaction between H and M
-        // TODO: call LLG_RK4_kernel (which shouldn't be seperated kernel) and adapt parameters
+        LLG_RK4_calculation(H, M_curr, M_next, idx, 
+                            material_start, material_end, N, 
+                            dt, neg_gamma_LL, neg_coeff_damp);
 
         // Coupling - add M to H
         #ifdef CLOSED_SYSTEM

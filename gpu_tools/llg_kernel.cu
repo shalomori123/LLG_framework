@@ -1,3 +1,4 @@
+#pragma once
 #include <cuda_runtime.h>
 #include <cuComplex.h>
 
@@ -32,18 +33,19 @@ __device__ __forceinline__ void compute_llg_derivative(
     kz = neg_gamma_LL * c1z + neg_coeff_damp * c2z;
 }
 
-// Main Kernel
-__global__ void LLG_RK4_kernel(
-    const float* __restrict__ M_curr,
+// Main Device Function
+__device__ __forceinline__ void LLG_RK4_calculation(
     const float2* __restrict__ H_curr, 
+    const float* __restrict__ M_curr,
     float* __restrict__ M_next,       
+    int idx,                                     // Passed from the calling kernel
     int material_start, int material_end, int N,
     float dt,                         
     float neg_gamma_LL,  // -gamma_LL (negative)
     float neg_coeff_damp // -(gamma * alpha * factor) / M0
 ) 
 {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    // Boundary check for the specific thread
     if (idx >= material_end || idx < material_start) return;
 
     int material_size = material_end - material_start;
@@ -53,7 +55,7 @@ __global__ void LLG_RK4_kernel(
     float My = M_curr[material_size + idx - material_start];
     float Mz = M_curr[2 * material_size + idx - material_start];
 
-    // Complex H field, M only interact with the real part
+    // Complex H field, M only interacts with the real part
     float Hx = H_curr[idx].x;
     float Hy = H_curr[N + idx].x;
     float Hz = H_curr[2 * N + idx].x;
