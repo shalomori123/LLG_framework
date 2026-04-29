@@ -66,10 +66,10 @@ void get_right_stencil(float2 curr, float2& right, float2* warp_edges,
 }
 
 __global__ void magnetic_kernel(
-    float2* E, float2* H,                   // 3xN Matrices
-    float* M_curr, float* M_next,           // 3x(material_size) Matrices
-    int N, float coeff,                     // Maxwell params
-    int material_start, int material_end,   // LLG spatial bounds
+    float2* E, float2* H,                   // 3xN Complex Matrices
+    float* M,                               // 3x(material_size) Real Matrix
+    int N, float coeff,                     // Maxwell coefficient
+    int material_start, int material_end,   // Material spatial bounds
     float dt, float neg_gamma_LL, float neg_coeff_damp // LLG constants
 ) {
     // Shared boundary arrays
@@ -77,48 +77,61 @@ __global__ void magnetic_kernel(
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     bool valid = (idx < N);
-    int y_idx = N + idx;
+
+    // Base Pointers
+    float2* Ex = E;
+    float2* Ey = E + N;
+    float2* Hx = H;
+    float2* Hy = H + N;
+    float2* Hz = H + 2 * N;
 
     // GET H FIELD
-    float2* Hx_curr = H + idx;
-    float2* Hy_curr = H + y_idx;
-    float2* Hz_curr = H + N + y_idx;
+    float2* Hx_curr = Hx + idx;
+    float2* Hy_curr = Hy + idx;
+    float2* Hz_curr = Hz + idx;
 
-    // calculate E field (Safe fetch for out-of-bounds threads)
-    float2 Ex_curr = valid ? E[idx] : ZERO;
-    float2 Ey_curr = valid ? E[y_idx] : ZERO;
-    float2 Ex_right, Ey_right; // Register neighbors
+    // GET E FIELD
+    float2 Ex_curr = valid ? Ex[idx] : ZERO;
+    float2 Ey_curr = valid ? Ey[idx] : ZERO;
+    float2 Ex_right, Ey_right; 
     
-    get_right_stencil(Ex_curr, Ex_right, warp_edges, E, N, idx);
-    get_right_stencil(Ey_curr, Ey_right, warp_edges, E, 2*N, y_idx);
+    get_right_stencil(Ex_curr, Ex_right, warp_edges, Ex, N, idx);
+    get_right_stencil(Ey_curr, Ey_right, warp_edges, Ey, N, idx);
+    if (!valid) return;
 
-    if (valid) {
-        // Faraday's law
-        Hx_curr->x += coeff * (Ey_right.x - Ey_curr.x); // Hx affected by Ey
-        Hx_curr->y += coeff * (Ey_right.y - Ey_curr.y);
-        Hy_curr->x += coeff * (Ex_right.x - Ex_curr.x); // Hy affected by Ex
-        Hy_curr->y += coeff * (Ex_right.y - Ex_curr.y);
+    // GET M FIELD
+    int material_size = material_end - material_start;
+    float *Mx = M + idx - material_start;
+    float *My = Mx + material_size;
+    float *Mz = My + material_size;
+
+    // Faraday's law - Update H
+    Hx_curr->x += coeff * (Ey_right.x - Ey_curr.x); // Hx affected by Ey
+    Hx_curr->y += coeff * (Ey_right.y - Ey_curr.y);
+    Hy_curr->x += coeff * (Ex_right.x - Ex_curr.x); // Hy affected by Ex
+    Hy_curr->y += coeff * (Ex_right.y - Ex_curr.y);
+
+    if (idx >= material_start && idx < material_end) {
+        float M_next_x, M_next_y, M_next_z;
 
         // LLG interaction between H and M
         LLG_RK4_calculation(
-            H, M_curr, M_next, idx, 
-            material_start, material_end, N, 
-            dt, neg_gamma_LL, neg_coeff_damp
+            *Mx, *My, *Mz, 
+            Hx_curr->x, Hy_curr->x, Hz_curr->x, 
+            dt, neg_gamma_LL, neg_coeff_damp, 
+            M_next_x, M_next_y, M_next_z
         );
 
         // Coupling - add M to H
         #ifdef CLOSED_SYSTEM
-        if (idx >= material_start && idx < material_end) {
-            int material_size = material_end - material_start;
-            int Mx_idx = idx - material_start;
-            int My_idx = Mx_idx + material_size;
-            int Mz_idx = My_idx + material_size;
-            
-            Hx_curr->x += M_curr[Mx_idx] - M_next[Mx_idx];
-            Hy_curr->x += M_curr[My_idx] - M_next[My_idx];
-            Hz_curr->x += M_curr[Mz_idx] - M_next[Mz_idx];
-        }
+        Hx_curr->x += *Mx - M_next_x;
+        Hy_curr->x += *My - M_next_y;
+        Hz_curr->x += *Mz - M_next_z;
         #endif
+
+        *Mx = M_next_x;
+        *My = M_next_y;
+        *Mz = M_next_z;
     }
 }
 
@@ -131,29 +144,34 @@ __global__ void electric_kernel(
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     bool valid = (idx < N);
-    int y_idx = N + idx;
+
+    // Base Pointers
+    float2* Ex = E;
+    float2* Ey = E + N;
+    float2* Hx = H;
+    float2* Hy = H + N;
 
     // GET E FIELD
-    float2* Ex_curr = E + idx;
-    float2* Ey_curr = E + y_idx;
+    float2* Ex_curr = Ex + idx;
+    float2* Ey_curr = Ey + idx;
 
-    // calculate H field (Safe fetch for out-of-bounds threads)
-    float2 Hx_curr = valid ? H[idx] : ZERO;
-    float2 Hy_curr = valid ? H[y_idx] : ZERO;
+    // GET H FIELD
+    float2 Hx_curr = valid ? Hx[idx] : ZERO;
+    float2 Hy_curr = valid ? Hy[idx] : ZERO;
     float2 Hx_left, Hy_left; 
     
-    get_left_stencil(Hx_curr, Hx_left, warp_edges, H, idx);
-    get_left_stencil(Hy_curr, Hy_left, warp_edges, H, y_idx);
+    get_left_stencil(Hx_curr, Hx_left, warp_edges, Hx, idx);
+    get_left_stencil(Hy_curr, Hy_left, warp_edges, Hy, idx);
 
+    // Ampere's law - Update E
     if (valid) {
-        // Ampere's law
         Ex_curr->x += coeff * (Hy_left.x - Hy_curr.x); // Ex affected by Hy
         Ex_curr->y += coeff * (Hy_left.y - Hy_curr.y);
         Ey_curr->x += coeff * (Hx_left.x - Hx_curr.x); // Ey affected by Hx
         Ey_curr->y += coeff * (Hx_left.y - Hx_curr.y);
     }
 
-    // ABC boundry condition logic [Sullivan 1.3 pg. 4]
+    // ABC boundary condition logic [Sullivan 1.3 pg. 4]
     // Read buffer value and then write the next.
     if (idx == 0) {
         *Ex_curr = abc_left[0];
