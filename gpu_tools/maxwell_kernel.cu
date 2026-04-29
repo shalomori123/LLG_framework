@@ -66,8 +66,8 @@ void get_right_stencil(float2 curr, float2& right, float2* warp_edges,
 }
 
 __global__ void magnetic_kernel(
-    float2* E, float2* H, 
-    float* M_curr, float* M_next,
+    float2* E, float2* H,                   // 3xN Matrices
+    float* M_curr, float* M_next,           // 3x(material_size) Matrices
     int N, float coeff,                     // Maxwell params
     int material_start, int material_end,   // LLG spatial bounds
     float dt, float neg_gamma_LL, float neg_coeff_damp // LLG constants
@@ -82,6 +82,7 @@ __global__ void magnetic_kernel(
     // GET H FIELD
     float2* Hx_curr = H + idx;
     float2* Hy_curr = H + y_idx;
+    float2* Hz_curr = H + N + y_idx;
 
     // calculate E field (Safe fetch for out-of-bounds threads)
     float2 Ex_curr = valid ? E[idx] : ZERO;
@@ -99,19 +100,32 @@ __global__ void magnetic_kernel(
         Hy_curr->y += coeff * (Ex_right.y - Ex_curr.y);
 
         // LLG interaction between H and M
-        LLG_RK4_calculation(H, M_curr, M_next, idx, 
-                            material_start, material_end, N, 
-                            dt, neg_gamma_LL, neg_coeff_damp);
+        LLG_RK4_calculation(
+            H, M_curr, M_next, idx, 
+            material_start, material_end, N, 
+            dt, neg_gamma_LL, neg_coeff_damp
+        );
 
         // Coupling - add M to H
         #ifdef CLOSED_SYSTEM
-            // H_next[material_begin:material_end, :] += M_current - M_next
+        if (idx >= material_start && idx < material_end) {
+            int material_size = material_end - material_start;
+            int Mx_idx = idx - material_start;
+            int My_idx = Mx_idx + material_size;
+            int Mz_idx = My_idx + material_size;
+            
+            Hx_curr->x += M_curr[Mx_idx] - M_next[Mx_idx];
+            Hy_curr->x += M_curr[My_idx] - M_next[My_idx];
+            Hz_curr->x += M_curr[Mz_idx] - M_next[Mz_idx];
+        }
         #endif
     }
 }
 
-__global__ void electric_kernel(float2* E, float2* H, int N, float coeff,
-                                float2* abc_left, float2* abc_right) {
+__global__ void electric_kernel(
+    float2* E, float2* H, int N, float coeff,
+    float2* abc_left, float2* abc_right
+) {
     // Shared boundary arrays
     __shared__ float2 warp_edges[WARPS_PER_BLOCK];
 

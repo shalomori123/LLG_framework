@@ -38,8 +38,9 @@ __device__ __forceinline__ void LLG_RK4_calculation(
     const float2* __restrict__ H_curr, 
     const float* __restrict__ M_curr,
     float* __restrict__ M_next,       
-    int idx,                                     // Passed from the calling kernel
-    int material_start, int material_end, int N,
+    int idx,
+    int material_start, int material_end, 
+    int N,
     float dt,                         
     float neg_gamma_LL,  // -gamma_LL (negative)
     float neg_coeff_damp // -(gamma * alpha * factor) / M0
