@@ -1,7 +1,7 @@
 #include <cuda_runtime.h>
 #include <cuComplex.h>
 
-#include "llg_kernel.cu"
+#include "llg_device.cuh"
 
 #define WARPS_PER_BLOCK 32
 #define ZERO make_float2(0.0f, 0.0f)
