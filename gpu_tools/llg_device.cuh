@@ -3,7 +3,7 @@
 #include <cuComplex.h>
 
 // Helper: Cross Product (Register-only)
-__device__ __forceinline__ void cross_product(
+__device__ void cross_product(
     float ax, float ay, float az,
     float bx, float by, float bz,
     float &rx, float &ry, float &rz 
@@ -14,7 +14,7 @@ __device__ __forceinline__ void cross_product(
 }
 
 // Helper: LLG Derivative Logic
-__device__ __forceinline__ void compute_llg_derivative(
+__device__ void compute_llg_derivative(
     float Mx, float My, float Mz,      
     float Hx_real, float Hy_real, float Hz_real,
     float neg_gamma_LL, float neg_coeff_damp,  // Constants
@@ -34,7 +34,7 @@ __device__ __forceinline__ void compute_llg_derivative(
 }
 
 // Main Device LLG Function
-__device__ __forceinline__ void LLG_RK4_calculation(
+__device__ void LLG_RK4_calculation(
     float Mx, float My, float Mz,
     float Hx_real, float Hy_real, float Hz_real,
     float dt, float neg_gamma_LL, float neg_coeff_damp,

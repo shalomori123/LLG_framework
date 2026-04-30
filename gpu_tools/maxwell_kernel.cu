@@ -9,7 +9,7 @@
 #define CLOSED_SYSTEM 1
 
 // Helper: Manage memory performance to get the left neighbor cell value
-__device__ __forceinline__ void get_left_stencil(
+__device__ void get_left_stencil(
     float2 curr, float2& left, float2* warp_edges, 
     float2* global_data, int idx
 ) {
@@ -40,7 +40,7 @@ __device__ __forceinline__ void get_left_stencil(
 }
 
 // Helper: Manage memory performance to get the right neighbor cell value
-__device__ __forceinline__ void get_right_stencil(
+__device__ void get_right_stencil(
     float2 curr, float2& right, float2* warp_edges, 
     float2* global_data, int N, int idx
 ) {
