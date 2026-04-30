@@ -39,7 +39,7 @@ def pulse_gen(max_E: float, phase: float, FWHM: float, dt: float,
     return out_pulse
 
 
-def simulation_gpu(z_indices: list[int], eps_r: list[float], conductivity: list[float], 
+def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[float], 
                    damping: float, M0: np.array,
                    max_E: float, phase_diff: float, pulse_width: float,
                    save_locations, save_time_indices, closed_system: bool,
@@ -97,11 +97,11 @@ def simulation_gpu(z_indices: list[int], eps_r: list[float], conductivity: list[
 
     # --- 6. Load CUDA Kernels ---
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(current_dir, "maxwell_kernel_9.cu"), "r") as f:
+    with open(os.path.join(current_dir, "maxwell_kernel.cu"), "r") as f:
         cuda_code = f.read()
 
     # We pass '-I.' so nvcc finds your 'llg_device.cuh' file in the same folder
-    module = cp.RawModule(code=cuda_code, options=('-I.', '-O3', '-use_fast_math', '-arch=sm_89'))
+    module = cp.RawModule(code=cuda_code, options=('-I.', '-use_fast_math', '-arch=sm_89'))
     magnetic_kernel = module.get_function("magnetic_kernel")
     electric_kernel = module.get_function("electric_kernel")
 

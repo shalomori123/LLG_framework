@@ -71,7 +71,7 @@ __device__ __forceinline__ void get_right_stencil(
 }
 
 // Main Magnetic Kernel - Faraday & LLG & Coupling
-__global__ void magnetic_kernel(
+extern "C" __global__ void magnetic_kernel(
     float2* E, float2* H,                   // 3xN Complex Matrices
     float* M,                               // 3x(material_size) Real Matrix
     int N, float coeff,                     // Maxwell coefficient
@@ -142,7 +142,7 @@ __global__ void magnetic_kernel(
 }
 
 // Main Electric Kernel - Ampere & Boundary Condition
-__global__ void electric_kernel(
+extern "C" __global__ void electric_kernel(
     float2* E, float2* H, int N, float coeff,
     float2* abc_left, float2* abc_right
 ) {
