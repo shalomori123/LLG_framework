@@ -92,9 +92,9 @@ extern "C" __global__ void magnetic_kernel(
     float2* Hz = H + 2 * N;
 
     // GET H FIELD
-    float2* Hx_curr = Hx + idx;
-    float2* Hy_curr = Hy + idx;
-    float2* Hz_curr = Hz + idx;
+    float2 Hx_curr = Hx[idx];
+    float2 Hy_curr = Hy[idx];
+    float2 Hz_curr = Hz[idx];
 
     // GET E FIELD
     float2 Ex_curr = valid ? Ex[idx] : ZERO;
@@ -112,33 +112,38 @@ extern "C" __global__ void magnetic_kernel(
     float *Mz = My + material_size;
 
     // Faraday's law FDTD - Update H
-    Hx_curr->x += coeff * (Ey_right.x - Ey_curr.x); // Hx affected by Ey
-    Hx_curr->y += coeff * (Ey_right.y - Ey_curr.y);
-    Hy_curr->x += coeff * (Ex_right.x - Ex_curr.x); // Hy affected by Ex
-    Hy_curr->y += coeff * (Ex_right.y - Ex_curr.y);
+    Hx_curr.x += coeff * (Ey_right.x - Ey_curr.x); // Hx affected by Ey
+    Hx_curr.y += coeff * (Ey_right.y - Ey_curr.y);
+    Hy_curr.x += coeff * (Ex_right.x - Ex_curr.x); // Hy affected by Ex
+    Hy_curr.y += coeff * (Ex_right.y - Ex_curr.y);
 
     if (idx >= material_start && idx < material_end) {
-        float M_next_x, M_next_y, M_next_z;
+        float Mx_curr = *Mx, My_curr = *My, Mz_curr = *Mz;
+        float Mx_next, My_next, Mz_next;
 
         // LLG interaction between H and M
         LLG_RK4_calculation(
-            *Mx, *My, *Mz, 
-            Hx_curr->x, Hy_curr->x, Hz_curr->x, 
+            Mx_curr, My_curr, Mz_curr, 
+            Hx_curr.x, Hy_curr.x, Hz_curr.x, 
             dt, neg_gamma_LL, neg_coeff_damp, 
-            M_next_x, M_next_y, M_next_z
+            Mx_next, My_next, Mz_next
         );
 
         // Coupling - add M to H
         #ifdef CLOSED_SYSTEM
-        Hx_curr->x += *Mx - M_next_x;
-        Hy_curr->x += *My - M_next_y;
-        Hz_curr->x += *Mz - M_next_z;
+        Hx_curr.x += Mx_curr - Mx_next;
+        Hy_curr.x += My_curr - My_next;
+        Hz_curr.x += Mz_curr - Mz_next;
         #endif
 
-        *Mx = M_next_x;
-        *My = M_next_y;
-        *Mz = M_next_z;
+        // Write back values
+        *Mx = Mx_next;
+        *My = My_next;
+        *Mz = Mz_next;
     }
+    Hx[idx] = Hx_curr;
+    Hy[idx] = Hy_curr;
+    Hz[idx] = Hz_curr;
 }
 
 // Main Electric Kernel - Ampere & Boundary Condition
@@ -159,8 +164,10 @@ extern "C" __global__ void electric_kernel(
     float2* Hy = H + N;
 
     // GET E FIELD
-    float2* Ex_curr = Ex + idx;
-    float2* Ey_curr = Ey + idx;
+    float2* Ex_ptr = Ex + idx;
+    float2* Ey_ptr = Ey + idx;
+    float2 Ex_curr = *Ex_ptr;
+    float2 Ey_curr = *Ey_ptr;
 
     // GET H FIELD
     float2 Hx_curr = valid ? Hx[idx] : ZERO;
@@ -172,27 +179,31 @@ extern "C" __global__ void electric_kernel(
 
     // Ampere's law FDTD - Update E
     if (valid) {
-        Ex_curr->x += coeff * (Hy_left.x - Hy_curr.x); // Ex affected by Hy
-        Ex_curr->y += coeff * (Hy_left.y - Hy_curr.y);
-        Ey_curr->x += coeff * (Hx_left.x - Hx_curr.x); // Ey affected by Hx
-        Ey_curr->y += coeff * (Hx_left.y - Hx_curr.y);
+        Ex_curr.x += coeff * (Hy_left.x - Hy_curr.x); // Ex affected by Hy
+        Ex_curr.y += coeff * (Hy_left.y - Hy_curr.y);
+        Ey_curr.x += coeff * (Hx_left.x - Hx_curr.x); // Ey affected by Hx
+        Ey_curr.y += coeff * (Hx_left.y - Hx_curr.y);
     }
 
     // ABC boundary condition logic [Sullivan 1.3 pg. 4]
     // Read buffer value and then write the next.
     if (idx == 0) {
-        *Ex_curr = abc_left[0];
-        *Ey_curr = abc_left[1];
+        Ex_curr = abc_left[0];
+        Ey_curr = abc_left[1];
     } else if (idx == N - 1) {
-        *Ex_curr = abc_right[0];
-        *Ey_curr = abc_right[1];
+        Ex_curr = abc_right[0];
+        Ey_curr = abc_right[1];
     }
     __syncthreads();
     if (idx == 1) {
-        abc_left[0] = *Ex_curr;
-        abc_left[1] = *Ey_curr;
+        abc_left[0] = Ex_curr;
+        abc_left[1] = Ey_curr;
     } else if (idx == N - 2) {
-        abc_right[0] = *Ex_curr;
-        abc_right[1] = *Ey_curr;
+        abc_right[0] = Ex_curr;
+        abc_right[1] = Ey_curr;
     }
+
+    // Write back values
+    *Ex_ptr = Ex_curr;
+    *Ey_ptr = Ey_curr;
 }
