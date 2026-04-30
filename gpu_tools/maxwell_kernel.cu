@@ -5,11 +5,14 @@
 
 #define WARPS_PER_BLOCK 32
 #define ZERO make_float2(0.0f, 0.0f)
+
 #define CLOSED_SYSTEM 1
 
-__device__ __forceinline__ 
-void get_left_stencil(float2 curr, float2& left, float2* warp_edges, 
-                         float2* global_data, int idx) {
+// Helper: Manage memory performance to get the left neighbor cell value
+__device__ __forceinline__ void get_left_stencil(
+    float2 curr, float2& left, float2* warp_edges, 
+    float2* global_data, int idx
+) {
     const int lane_id = threadIdx.x % warpSize;
     const int warp_id = threadIdx.x / warpSize;
 
@@ -36,9 +39,11 @@ void get_left_stencil(float2 curr, float2& left, float2* warp_edges,
     __syncthreads();
 }
 
-__device__ __forceinline__ 
-void get_right_stencil(float2 curr, float2& right, float2* warp_edges, 
-                          float2* global_data, int N, int idx) {
+// Helper: Manage memory performance to get the right neighbor cell value
+__device__ __forceinline__ void get_right_stencil(
+    float2 curr, float2& right, float2* warp_edges, 
+    float2* global_data, int N, int idx
+) {
     const int lane_id = threadIdx.x % warpSize;
     const int warp_id = threadIdx.x / warpSize;
 
@@ -65,6 +70,7 @@ void get_right_stencil(float2 curr, float2& right, float2* warp_edges,
     __syncthreads();
 }
 
+// Main Magnetic Kernel - Faraday & LLG & Coupling
 __global__ void magnetic_kernel(
     float2* E, float2* H,                   // 3xN Complex Matrices
     float* M,                               // 3x(material_size) Real Matrix
@@ -105,7 +111,7 @@ __global__ void magnetic_kernel(
     float *My = Mx + material_size;
     float *Mz = My + material_size;
 
-    // Faraday's law - Update H
+    // Faraday's law FDTD - Update H
     Hx_curr->x += coeff * (Ey_right.x - Ey_curr.x); // Hx affected by Ey
     Hx_curr->y += coeff * (Ey_right.y - Ey_curr.y);
     Hy_curr->x += coeff * (Ex_right.x - Ex_curr.x); // Hy affected by Ex
@@ -135,6 +141,7 @@ __global__ void magnetic_kernel(
     }
 }
 
+// Main Electric Kernel - Ampere & Boundary Condition
 __global__ void electric_kernel(
     float2* E, float2* H, int N, float coeff,
     float2* abc_left, float2* abc_right
@@ -163,7 +170,7 @@ __global__ void electric_kernel(
     get_left_stencil(Hx_curr, Hx_left, warp_edges, Hx, idx);
     get_left_stencil(Hy_curr, Hy_left, warp_edges, Hy, idx);
 
-    // Ampere's law - Update E
+    // Ampere's law FDTD - Update E
     if (valid) {
         Ex_curr->x += coeff * (Hy_left.x - Hy_curr.x); // Ex affected by Hy
         Ex_curr->y += coeff * (Hy_left.y - Hy_curr.y);

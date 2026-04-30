@@ -6,8 +6,8 @@
 __device__ __forceinline__ void cross_product(
     float ax, float ay, float az,
     float bx, float by, float bz,
-    float &rx, float &ry, float &rz) 
-{
+    float &rx, float &ry, float &rz 
+) {
     rx = ay * bz - az * by;
     ry = az * bx - ax * bz;
     rz = ax * by - ay * bx;
@@ -18,8 +18,8 @@ __device__ __forceinline__ void compute_llg_derivative(
     float Mx, float My, float Mz,      
     float Hx_real, float Hy_real, float Hz_real,
     float neg_gamma_LL, float neg_coeff_damp,  // Constants
-    float &kx, float &ky, float &kz)     // Output 
-{
+    float &kx, float &ky, float &kz     // Output 
+) {
     // M x H
     float c1x, c1y, c1z;
     cross_product(Mx, My, Mz, Hx_real, Hy_real, Hz_real, c1x, c1y, c1z);
@@ -33,7 +33,7 @@ __device__ __forceinline__ void compute_llg_derivative(
     kz = neg_gamma_LL * c1z + neg_coeff_damp * c2z;
 }
 
-// Main Device Function
+// Main Device LLG Function
 __device__ __forceinline__ void LLG_RK4_calculation(
     float Mx, float My, float Mz,
     float Hx_real, float Hy_real, float Hz_real,
