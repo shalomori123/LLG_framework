@@ -121,8 +121,18 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
     
     save_index_counter = 0
 
-    # Constant Coefficient (Note: To use array coefficients, update the kernel signature)
+    # Faraday coefficient (vacuum, Courant 0.5)
     coeff = cp.float32(0.5)
+
+    # Per-cell Ampere coefficients for lossy dielectric [Sullivan eq. 3.8]
+    coeff_E_cpu = np.ones(grid_size, dtype=np.float32)
+    coeff_H_cpu = np.full(grid_size, 0.5, dtype=np.float32)
+    for i in range(len(eps_r)):
+        eaf = dt * conductivity[i] / (2 * EPSILON_0 * eps_r[i])
+        coeff_E_cpu[z_indices[i]:z_indices[i+1]] = (1 - eaf) / (1 + eaf)
+        coeff_H_cpu[z_indices[i]:z_indices[i+1]] = 0.5 / (eps_r[i] * (1 + eaf))
+    coeff_E_gpu = cp.asarray(coeff_E_cpu)
+    coeff_H_gpu = cp.asarray(coeff_H_cpu)
 
     # --- 8. THE MAIN FDTD LOOP ---
     for time_idx in tqdm(range(0, total_time_steps), desc="GPU Simulation Process: "):
@@ -144,7 +154,7 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
         # 3. Electric Kernel (Updates E, manages ABC boundaries)
         electric_kernel(
             (blocks_per_grid,), (threads_per_block,),
-            (E_gpu, H_gpu, np.int32(grid_size), coeff, abc_left_gpu, abc_right_gpu)
+            (E_gpu, H_gpu, np.int32(grid_size), coeff_E_gpu, coeff_H_gpu, abc_left_gpu, abc_right_gpu)
         )
 
         # --- 9. Data Extraction ---

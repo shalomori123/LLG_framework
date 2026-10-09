@@ -150,7 +150,8 @@ extern "C" __global__ void magnetic_kernel(
 
 // Main Electric Kernel - Ampere & Boundary Condition
 extern "C" __global__ void electric_kernel(
-    float2* E, float2* H, int N, float coeff,
+    float2* E, float2* H, int N,
+    const float* coeff_E, const float* coeff_H, // Per-cell ca, cb [Sullivan eq. 3.8]
     float2* abc_left, float2* abc_right
 ) {
     // Shared boundary arrays
@@ -182,10 +183,11 @@ extern "C" __global__ void electric_kernel(
     // Ampere's law FDTD - Update E [Sullivan eq. 1.9a]
     // E[N-1] has no right neighbour and is set by the ABC
     if (idx < N - 1) {
-        Ex_curr.x -= coeff * (Hy_right.x - Hy_curr.x); // Ex affected by Hy
-        Ex_curr.y -= coeff * (Hy_right.y - Hy_curr.y);
-        Ey_curr.x += coeff * (Hx_right.x - Hx_curr.x); // Ey affected by Hx
-        Ey_curr.y += coeff * (Hx_right.y - Hx_curr.y);
+        float ca = coeff_E[idx], cb = coeff_H[idx];
+        Ex_curr.x = ca * Ex_curr.x - cb * (Hy_right.x - Hy_curr.x); // Ex affected by Hy
+        Ex_curr.y = ca * Ex_curr.y - cb * (Hy_right.y - Hy_curr.y);
+        Ey_curr.x = ca * Ey_curr.x + cb * (Hx_right.x - Hx_curr.x); // Ey affected by Hx
+        Ey_curr.y = ca * Ey_curr.y + cb * (Hx_right.y - Hx_curr.y);
     }
 
     // ABC boundary condition logic [Sullivan 1.3 pg. 4]
