@@ -100,8 +100,8 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
     with open(os.path.join(current_dir, "maxwell_kernel.cu"), "r") as f:
         cuda_code = f.read()
 
-    # We pass '-I.' so nvcc finds your 'llg_device.cuh' file in the same folder
-    module = cp.RawModule(code=cuda_code, options=('-I.', '-use_fast_math', '-arch=sm_89'))
+    # Include path is this file's folder (not the CWD) so 'llg_device.cuh' is found from anywhere
+    module = cp.RawModule(code=cuda_code, options=('-I' + current_dir, '-use_fast_math', '-arch=sm_89'))
     magnetic_kernel = module.get_function("magnetic_kernel")
     electric_kernel = module.get_function("electric_kernel")
 
