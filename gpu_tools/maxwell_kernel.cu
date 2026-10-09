@@ -109,6 +109,20 @@ extern "C" __global__ void magnetic_kernel(
     float *Mx = M + idx - material_start;
     float *My = Mx + material_size;
     float *Mz = My + material_size;
+    bool in_material = (idx >= material_start && idx < material_end);
+    float Mx_curr, My_curr, Mz_curr;
+    float Mx_next, My_next, Mz_next;
+
+    // LLG interaction between H and M, driven by H^n (before Faraday)
+    if (in_material) {
+        Mx_curr = *Mx; My_curr = *My; Mz_curr = *Mz;
+        LLG_RK4_calculation(
+            Mx_curr, My_curr, Mz_curr, 
+            Hx_curr.x, Hy_curr.x, Hz_curr.x, 
+            dt, neg_gamma_LL, neg_coeff_damp, 
+            Mx_next, My_next, Mz_next
+        );
+    }
 
     // Faraday's law FDTD - Update H [Sullivan eq. 1.9b], H[i] sits at i-1/2
     // H[0] has no left neighbour and stays untouched
@@ -119,18 +133,7 @@ extern "C" __global__ void magnetic_kernel(
         Hy_curr.y -= coeff * (Ex_curr.y - Ex_left.y);
     }
 
-    if (idx >= material_start && idx < material_end) {
-        float Mx_curr = *Mx, My_curr = *My, Mz_curr = *Mz;
-        float Mx_next, My_next, Mz_next;
-
-        // LLG interaction between H and M
-        LLG_RK4_calculation(
-            Mx_curr, My_curr, Mz_curr, 
-            Hx_curr.x, Hy_curr.x, Hz_curr.x, 
-            dt, neg_gamma_LL, neg_coeff_damp, 
-            Mx_next, My_next, Mz_next
-        );
-
+    if (in_material) {
         // Coupling - add M to H
         if (closed_system) {
             Hx_curr.x += Mx_curr - Mx_next;
