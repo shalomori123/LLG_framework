@@ -55,13 +55,10 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
     # --- 2. LLG Physics Parameters ---
     gamma_ll = GAMMA / (1 + damping**2)
     lambda_ll = gamma_ll * damping
-    
-    # Calculate average magnitude per cell for the damping scalar
-    # (Matches your logic of dividing M0 by the segment size)
-    cell_M_mag = np.linalg.norm(M0[0, :]) / material_size 
-    
+
+    # The damping term is divided by the per-cell |M|, computed in the kernel each step
     neg_gamma_LL_kernel = -gamma_ll * MU_0
-    neg_coeff_damp = -(lambda_ll * MU_0) / cell_M_mag
+    neg_lambda_mu = -lambda_ll * MU_0
 
     # --- 3. GPU Memory Allocation (Monolithic SoA) ---
     # Complex arrays for E and H (float2 in CUDA)
@@ -147,7 +144,7 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
             (E_gpu, H_gpu, M_gpu, 
              np.int32(grid_size), coeff, 
              np.int32(material_begin), np.int32(material_end), 
-             cp.float32(dt), cp.float32(neg_gamma_LL_kernel), cp.float32(neg_coeff_damp),
+             cp.float32(dt), cp.float32(neg_gamma_LL_kernel), cp.float32(neg_lambda_mu),
              np.int32(closed_system))
         )
 

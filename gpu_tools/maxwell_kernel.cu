@@ -74,7 +74,7 @@ extern "C" __global__ void magnetic_kernel(
     float* M,                               // 3x(material_size) Real Matrix
     int N, float coeff,                     // Maxwell coefficient
     int material_start, int material_end,   // Material spatial bounds
-    float dt, float neg_gamma_LL, float neg_coeff_damp, // LLG constants
+    float dt, float neg_gamma_LL, float neg_lambda_mu, // LLG constants
     int closed_system                       // 1: M feeds back into H
 ) {
     // Shared boundary arrays
@@ -116,6 +116,8 @@ extern "C" __global__ void magnetic_kernel(
     // LLG interaction between H and M, driven by H^n (before Faraday)
     if (in_material) {
         Mx_curr = *Mx; My_curr = *My; Mz_curr = *Mz;
+        float M_mag = sqrtf(Mx_curr*Mx_curr + My_curr*My_curr + Mz_curr*Mz_curr);
+        float neg_coeff_damp = neg_lambda_mu / M_mag;
         LLG_RK4_calculation(
             Mx_curr, My_curr, Mz_curr, 
             Hx_curr.x, Hy_curr.x, Hz_curr.x, 
