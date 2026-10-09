@@ -68,14 +68,15 @@ __device__ void get_right_stencil(
     __syncthreads();
 }
 
-// Main Magnetic Kernel - Faraday & LLG & Coupling
+// Main Magnetic Kernel - ABC & Faraday & LLG & Coupling
 extern "C" __global__ void magnetic_kernel(
     float2* E, float2* H,                   // 3xN Complex Matrices
     float* M,                               // 3x(material_size) Real Matrix
     int N, float coeff,                     // Maxwell coefficient
     int material_start, int material_end,   // Material spatial bounds
     float dt, float neg_gamma_LL, float neg_lambda_mu, // LLG constants
-    int closed_system                       // 1: M feeds back into H
+    int closed_system,                      // 1: M feeds back into H
+    float2* abc_left, float2* abc_right     // ABC buffers [2 slots][Ex, Ey]
 ) {
     // Shared boundary arrays
     __shared__ float2 warp_edges[WARPS_PER_BLOCK];
@@ -98,6 +99,25 @@ extern "C" __global__ void magnetic_kernel(
     // GET E FIELD
     float2 Ex_curr = valid ? Ex[idx] : ZERO;
     float2 Ey_curr = valid ? Ey[idx] : ZERO;
+
+    // ABC boundary condition [Sullivan 1.3 pg. 4]: E^n(0) = E^(n-2)(1) at Courant 0.5.
+    // Only the owner thread of each edge cell touches its buffer, so any block count is safe.
+    if (idx == 0) {
+        Ex_curr = abc_left[0];
+        Ey_curr = abc_left[1];
+        abc_left[0] = abc_left[2];
+        abc_left[1] = abc_left[3];
+        Ex[idx] = Ex_curr;
+        Ey[idx] = Ey_curr;
+    } else if (idx == N - 1) {
+        Ex_curr = abc_right[0];
+        Ey_curr = abc_right[1];
+        abc_right[0] = abc_right[2];
+        abc_right[1] = abc_right[3];
+        Ex[idx] = Ex_curr;
+        Ey[idx] = Ey_curr;
+    }
+
     float2 Ex_left, Ey_left; 
     
     get_left_stencil(Ex_curr, Ex_left, warp_edges, Ex, idx);
@@ -153,7 +173,7 @@ extern "C" __global__ void magnetic_kernel(
     Hz[idx] = Hz_curr;
 }
 
-// Main Electric Kernel - Ampere & Boundary Condition
+// Main Electric Kernel - Ampere & ABC buffer fill
 extern "C" __global__ void electric_kernel(
     float2* E, float2* H, int N,
     const float* coeff_E, const float* coeff_H, // Per-cell ca, cb [Sullivan eq. 3.8]
@@ -185,6 +205,15 @@ extern "C" __global__ void electric_kernel(
     get_right_stencil(Hx_curr, Hx_right, warp_edges, Hx, N, idx);
     get_right_stencil(Hy_curr, Hy_right, warp_edges, Hy, N, idx);
 
+    // ABC: push E^n of the cells next to the edges into the second buffer slot
+    if (idx == 1) {
+        abc_left[2] = Ex_curr;
+        abc_left[3] = Ey_curr;
+    } else if (idx == N - 2) {
+        abc_right[2] = Ex_curr;
+        abc_right[3] = Ey_curr;
+    }
+
     // Ampere's law FDTD - Update E [Sullivan eq. 1.9a]
     // E[N-1] has no right neighbour and is set by the ABC
     if (idx < N - 1) {
@@ -193,24 +222,6 @@ extern "C" __global__ void electric_kernel(
         Ex_curr.y = ca * Ex_curr.y - cb * (Hy_right.y - Hy_curr.y);
         Ey_curr.x = ca * Ey_curr.x + cb * (Hx_right.x - Hx_curr.x); // Ey affected by Hx
         Ey_curr.y = ca * Ey_curr.y + cb * (Hx_right.y - Hx_curr.y);
-    }
-
-    // ABC boundary condition logic [Sullivan 1.3 pg. 4]
-    // Read buffer value and then write the next.
-    if (idx == 0) {
-        Ex_curr = abc_left[0];
-        Ey_curr = abc_left[1];
-    } else if (idx == N - 1) {
-        Ex_curr = abc_right[0];
-        Ey_curr = abc_right[1];
-    }
-    __syncthreads();
-    if (idx == 1) {
-        abc_left[0] = Ex_curr;
-        abc_left[1] = Ey_curr;
-    } else if (idx == N - 2) {
-        abc_right[0] = Ex_curr;
-        abc_right[1] = Ey_curr;
     }
 
     // Write back values

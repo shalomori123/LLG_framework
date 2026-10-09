@@ -68,9 +68,9 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
     # Real array for M (float in CUDA)
     M_gpu = cp.zeros(3 * material_size, dtype=cp.float32)
 
-    # ABC Buffers
-    abc_left_gpu = cp.zeros(2, dtype=cp.complex64)
-    abc_right_gpu = cp.zeros(2, dtype=cp.complex64)
+    # ABC Buffers - 2-step delay at Courant 0.5: [2 slots][Ex, Ey]
+    abc_left_gpu = cp.zeros(4, dtype=cp.complex64)
+    abc_right_gpu = cp.zeros(4, dtype=cp.complex64)
 
     # --- 4. Initialize M on GPU ---
     M_cpu_init = np.zeros((material_size, 3), dtype=np.float32)
@@ -138,17 +138,17 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
         E_gpu[3] += pulse_x_gpu[time_idx]
         E_gpu[grid_size + 3] += pulse_y_gpu[time_idx]
 
-        # 2. Magnetic Kernel (Updates H, steps LLG, applies Coupling)
+        # 2. Magnetic Kernel (Applies ABC, updates H, steps LLG, applies Coupling)
         magnetic_kernel(
             (blocks_per_grid,), (threads_per_block,),
             (E_gpu, H_gpu, M_gpu, 
              np.int32(grid_size), coeff, 
              np.int32(material_begin), np.int32(material_end), 
              cp.float32(dt), cp.float32(neg_gamma_LL_kernel), cp.float32(neg_lambda_mu),
-             np.int32(closed_system))
+             np.int32(closed_system), abc_left_gpu, abc_right_gpu)
         )
 
-        # 3. Electric Kernel (Updates E, manages ABC boundaries)
+        # 3. Electric Kernel (Updates E, fills ABC buffers)
         electric_kernel(
             (blocks_per_grid,), (threads_per_block,),
             (E_gpu, H_gpu, np.int32(grid_size), coeff_E_gpu, coeff_H_gpu, abc_left_gpu, abc_right_gpu)
