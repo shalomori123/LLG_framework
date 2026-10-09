@@ -1,19 +1,14 @@
+import json
+import os
+import shutil
+from functools import lru_cache
+from pathlib import Path
+
 import numpy as np
 import cupy as cp
 from tqdm import tqdm
-import os
 
-# Physical Constants 
-EPSILON_0 = 8.854e-12
-MU_0 = 4 * np.pi * 1e-7
-SPEED_OF_LIGHT = 1 / (EPSILON_0 * MU_0) ** 0.5
-IMPEDANCE = (MU_0 / EPSILON_0) ** 0.5
-
-ELEMENTARY_CHARGE = 1.60217646e-19
-LANDAU_FACTOR = 2
-ELECTRON_MASS = 9.1093821545e-31
-GAMMA_FACTOR = 1
-GAMMA = GAMMA_FACTOR * LANDAU_FACTOR * ELEMENTARY_CHARGE / (2 * ELECTRON_MASS)
+from sim_config import EPSILON_0, MU_0, SPEED_OF_LIGHT, GAMMA
 
 
 def pulse_gen(max_E: float, phase: float, FWHM: float, dt: float, 
@@ -37,6 +32,16 @@ def pulse_gen(max_E: float, phase: float, FWHM: float, dt: float,
         return pulse_amp * np.exp(- (t - peak_loc)**2 / (2 * sigma**2)) * np.exp(1j * omega * t)
         
     return out_pulse
+
+
+@lru_cache(maxsize=None)
+def load_kernels():
+    """Compile maxwell_kernel.cu once per process."""
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(current_dir, "maxwell_kernel.cu"), "r") as f:
+        cuda_code = f.read()
+    module = cp.RawModule(code=cuda_code, options=('-use_fast_math', '-arch=sm_89'))
+    return module.get_function("magnetic_kernel"), module.get_function("electric_kernel")
 
 
 def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[float], 
@@ -64,9 +69,6 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
     # Complex arrays for E and H (float2 in CUDA)
     E_gpu = cp.zeros(2 * grid_size, dtype=cp.complex64)
     H_gpu = cp.zeros(3 * grid_size, dtype=cp.complex64)
-    
-    # Real array for M (float in CUDA)
-    M_gpu = cp.zeros(3 * material_size, dtype=cp.float32)
 
     # ABC Buffers - 2-step delay at Courant 0.5: [2 slots][Ex, Ey]
     abc_left_gpu = cp.zeros(4, dtype=cp.complex64)
@@ -93,14 +95,7 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
     pulse_y_gpu = cp.asarray(pulse_array[:, 1])
 
     # --- 6. Load CUDA Kernels ---
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(current_dir, "maxwell_kernel.cu"), "r") as f:
-        cuda_code = f.read()
-
-    # Include path is this file's folder (not the CWD) so 'llg_device.cuh' is found from anywhere
-    module = cp.RawModule(code=cuda_code, options=('-I' + current_dir, '-use_fast_math', '-arch=sm_89'))
-    magnetic_kernel = module.get_function("magnetic_kernel")
-    electric_kernel = module.get_function("electric_kernel")
+    magnetic_kernel, electric_kernel = load_kernels()
 
     # Block and Grid dimensions
     threads_per_block = 256
@@ -194,6 +189,51 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
         "systen status": closed_system, "dt": dt, "safety_start": safety_factor
     }
 
-if __name__ == '__main__':
-    print("Initializing GPU Simulation...")
-    # Add your test variables here and run simulation_gpu(...)
+
+# =============================================================================
+# BUNDLE I/O - <name>.simdata/ directory: manifest.json + one .npy per array
+# (same format as the partner repo's load_simulation_data)
+# =============================================================================
+def _to_jsonable(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(item) for item in value]
+    return value
+
+
+def save_simulation_bundle(bundle_path, data: dict) -> Path:
+    bundle_path = Path(bundle_path).with_suffix(".simdata")
+    temp_path = bundle_path.with_name(bundle_path.name + ".tmp")
+    if temp_path.exists():
+        shutil.rmtree(temp_path)
+    temp_path.mkdir(parents=True)
+
+    manifest = {"arrays": {}, "metadata": {}}
+    for key, value in data.items():
+        if isinstance(value, np.ndarray):
+            file_name = f"array_{len(manifest['arrays']):02d}.npy"
+            np.save(temp_path / file_name, value, allow_pickle=False)
+            manifest["arrays"][key] = file_name
+        else:
+            manifest["metadata"][key] = _to_jsonable(value)
+
+    with (temp_path / "manifest.json").open("w") as fh:
+        json.dump(manifest, fh)
+    if bundle_path.exists():
+        shutil.rmtree(bundle_path)
+    temp_path.rename(bundle_path)
+    return bundle_path
+
+
+def load_simulation_data(bundle_path, mmap: bool = True) -> dict:
+    """Arrays are memory-mapped by default, so large bundles don't fill RAM."""
+    bundle_path = Path(bundle_path)
+    with (bundle_path / "manifest.json").open() as fh:
+        manifest = json.load(fh)
+    data = dict(manifest["metadata"])
+    for key, file_name in manifest["arrays"].items():
+        data[key] = np.load(bundle_path / file_name, mmap_mode="r" if mmap else None)
+    return data
