@@ -6,8 +6,6 @@
 #define WARPS_PER_BLOCK 32
 #define ZERO make_float2(0.0f, 0.0f)
 
-#define CLOSED_SYSTEM 1
-
 // Helper: Manage memory performance to get the left neighbor cell value
 __device__ void get_left_stencil(
     float2 curr, float2& left, float2* warp_edges, 
@@ -76,7 +74,8 @@ extern "C" __global__ void magnetic_kernel(
     float* M,                               // 3x(material_size) Real Matrix
     int N, float coeff,                     // Maxwell coefficient
     int material_start, int material_end,   // Material spatial bounds
-    float dt, float neg_gamma_LL, float neg_coeff_damp // LLG constants
+    float dt, float neg_gamma_LL, float neg_coeff_damp, // LLG constants
+    int closed_system                       // 1: M feeds back into H
 ) {
     // Shared boundary arrays
     __shared__ float2 warp_edges[WARPS_PER_BLOCK];
@@ -130,11 +129,11 @@ extern "C" __global__ void magnetic_kernel(
         );
 
         // Coupling - add M to H
-        #ifdef CLOSED_SYSTEM
-        Hx_curr.x += Mx_curr - Mx_next;
-        Hy_curr.x += My_curr - My_next;
-        Hz_curr.x += Mz_curr - Mz_next;
-        #endif
+        if (closed_system) {
+            Hx_curr.x += Mx_curr - Mx_next;
+            Hy_curr.x += My_curr - My_next;
+            Hz_curr.x += Mz_curr - Mz_next;
+        }
 
         // Write back values
         *Mx = Mx_next;

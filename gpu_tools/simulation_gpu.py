@@ -135,15 +135,16 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
         magnetic_kernel(
             (blocks_per_grid,), (threads_per_block,),
             (E_gpu, H_gpu, M_gpu, 
-             grid_size, coeff, 
-             material_begin, material_end, 
-             cp.float32(dt), cp.float32(neg_gamma_LL_kernel), cp.float32(neg_coeff_damp))
+             np.int32(grid_size), coeff, 
+             np.int32(material_begin), np.int32(material_end), 
+             cp.float32(dt), cp.float32(neg_gamma_LL_kernel), cp.float32(neg_coeff_damp),
+             np.int32(closed_system))
         )
 
         # 3. Electric Kernel (Updates E, manages ABC boundaries)
         electric_kernel(
             (blocks_per_grid,), (threads_per_block,),
-            (E_gpu, H_gpu, grid_size, coeff, abc_left_gpu, abc_right_gpu)
+            (E_gpu, H_gpu, np.int32(grid_size), coeff, abc_left_gpu, abc_right_gpu)
         )
 
         # --- 9. Data Extraction ---
