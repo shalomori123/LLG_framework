@@ -174,23 +174,36 @@ __device__ void get_right_stencil(
 
 // ============================================================================
 // Kernels - one time step = magnetic_kernel then electric_kernel
+// Launch grid (blocks_x, C): blockIdx.x splits the cells of one simulation,
+// blockIdx.y = c selects the case. Case c's arrays start at c * (case size),
+// per-case scalars are arrays indexed by c. C = 1 is a single run.
 // ============================================================================
 
 // Main Magnetic Kernel - ABC & Faraday & LLG & Coupling
 extern "C" __global__ void magnetic_kernel(
-    real2* E, real2* H,                   // 3xN Complex Matrices
-    real* M,                               // 3x(material_size) Real Matrix
-    int N, real coeff,                     // Maxwell coefficient
+    real2* E, real2* H,                     // Per case: 2xN / 3xN Complex Matrices
+    real* M,                                // Per case: 3x(material_size) Real Matrix
+    int N, real coeff,                      // Maxwell coefficient
     int material_start, int material_end,   // Material spatial bounds
-    real dt, real neg_gamma_LL, real neg_lambda_mu, // LLG constants
-    int closed_system,                      // 1: M feeds back into H
-    real2* abc_left, real2* abc_right     // ABC buffers [2 slots][Ex, Ey]
+    real dt,
+    const real* neg_gamma_LL, const real* neg_lambda_mu, // Per-case LLG constants
+    const int* closed_system,               // Per case, 1: M feeds back into H
+    real2* abc_left, real2* abc_right       // Per case ABC buffers [2 slots][Ex, Ey]
 ) {
     // Shared boundary arrays
     __shared__ real2 warp_edges[WARPS_PER_BLOCK];
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     bool valid = (idx < N);
+
+    // Case offsets
+    const int c = blockIdx.y;
+    int material_size = material_end - material_start;
+    E += c * 2 * N;
+    H += c * 3 * N;
+    M += c * 3 * material_size;
+    abc_left += c * 4;
+    abc_right += c * 4;
 
     // Base Pointers
     real2* Ex = E;
@@ -233,7 +246,6 @@ extern "C" __global__ void magnetic_kernel(
     if (!valid) return;
 
     // GET M FIELD
-    int material_size = material_end - material_start;
     real *Mx = M + idx - material_start;
     real *My = Mx + material_size;
     real *Mz = My + material_size;
@@ -245,11 +257,11 @@ extern "C" __global__ void magnetic_kernel(
     if (in_material) {
         Mx_curr = *Mx; My_curr = *My; Mz_curr = *Mz;
         real M_mag = sqrt(Mx_curr*Mx_curr + My_curr*My_curr + Mz_curr*Mz_curr);
-        real neg_coeff_damp = neg_lambda_mu / M_mag;
+        real neg_coeff_damp = neg_lambda_mu[c] / M_mag;
         LLG_RK4_calculation(
             Mx_curr, My_curr, Mz_curr, 
             Hx_curr.x, Hy_curr.x, Hz_curr.x, 
-            dt, neg_gamma_LL, neg_coeff_damp, 
+            dt, neg_gamma_LL[c], neg_coeff_damp, 
             Mx_next, My_next, Mz_next
         );
     }
@@ -265,7 +277,7 @@ extern "C" __global__ void magnetic_kernel(
 
     if (in_material) {
         // Coupling - add M to H
-        if (closed_system) {
+        if (closed_system[c]) {
             Hx_curr.x += Mx_curr - Mx_next;
             Hy_curr.x += My_curr - My_next;
             Hz_curr.x += Mz_curr - Mz_next;
@@ -284,7 +296,7 @@ extern "C" __global__ void magnetic_kernel(
 // Main Electric Kernel - Ampere & ABC buffer fill
 extern "C" __global__ void electric_kernel(
     real2* E, real2* H, int N,
-    const real* coeff_E, const real* coeff_H, // Per-cell ca, cb [Sullivan eq. 3.8]
+    const real* coeff_E, const real* coeff_H, // Per case, per-cell ca, cb [Sullivan eq. 3.8]
     real2* abc_left, real2* abc_right
 ) {
     // Shared boundary arrays
@@ -292,6 +304,15 @@ extern "C" __global__ void electric_kernel(
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     bool valid = (idx < N);
+
+    // Case offsets
+    const int c = blockIdx.y;
+    E += c * 2 * N;
+    H += c * 3 * N;
+    coeff_E += c * N;
+    coeff_H += c * N;
+    abc_left += c * 4;
+    abc_right += c * 4;
 
     // Base Pointers
     real2* Ex = E;
