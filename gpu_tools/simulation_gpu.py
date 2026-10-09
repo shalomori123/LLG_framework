@@ -34,13 +34,22 @@ def pulse_gen(max_E: float, phase: float, FWHM: float, dt: float,
     return out_pulse
 
 
+# Host dtypes matching the kernel's real / real2 typedefs
+DTYPES = {
+    "fp64": (np.float64, np.complex128),
+    "fp32": (np.float32, np.complex64),
+}
+
+
 @lru_cache(maxsize=None)
-def load_kernels():
-    """Compile maxwell_kernel.cu once per process."""
+def load_kernels(precision: str = "fp64"):
+    """Compile maxwell_kernel.cu once per process and precision.
+    No -arch: NVRTC targets the installed GPU."""
     current_dir = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(current_dir, "maxwell_kernel.cu"), "r") as f:
         cuda_code = f.read()
-    module = cp.RawModule(code=cuda_code, options=('-use_fast_math', '-arch=sm_89'))
+    options = ('-DUSE_FP32', '-use_fast_math') if precision == "fp32" else ()
+    module = cp.RawModule(code=cuda_code, options=options)
     return module.get_function("magnetic_kernel"), module.get_function("electric_kernel")
 
 
@@ -48,8 +57,10 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
                    damping: float, M0: np.array,
                    max_E: float, phase_diff: float, pulse_width: float,
                    save_locations, save_time_indices, closed_system: bool,
-                   dt: float, total_time_steps: int, wavelength=800e-9, polarization_angle=0, safety_factor=4, time_interval=1):
-    
+                   dt: float, total_time_steps: int, wavelength=800e-9, polarization_angle=0, safety_factor=4, time_interval=1,
+                   precision="fp64"):
+    real_t, complex_t = DTYPES[precision]
+
     # --- 1. Grid Definition ---
     spatial_step = 2 * SPEED_OF_LIGHT * dt
     material_begin = z_indices[0]
@@ -66,16 +77,16 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
     neg_lambda_mu = -lambda_ll * MU_0
 
     # --- 3. GPU Memory Allocation (Monolithic SoA) ---
-    # Complex arrays for E and H (float2 in CUDA)
-    E_gpu = cp.zeros(2 * grid_size, dtype=cp.complex64)
-    H_gpu = cp.zeros(3 * grid_size, dtype=cp.complex64)
+    # Complex arrays for E and H (real2 in CUDA)
+    E_gpu = cp.zeros(2 * grid_size, dtype=complex_t)
+    H_gpu = cp.zeros(3 * grid_size, dtype=complex_t)
 
     # ABC Buffers - 2-step delay at Courant 0.5: [2 slots][Ex, Ey]
-    abc_left_gpu = cp.zeros(4, dtype=cp.complex64)
-    abc_right_gpu = cp.zeros(4, dtype=cp.complex64)
+    abc_left_gpu = cp.zeros(4, dtype=complex_t)
+    abc_right_gpu = cp.zeros(4, dtype=complex_t)
 
     # --- 4. Initialize M on GPU ---
-    M_cpu_init = np.zeros((material_size, 3), dtype=np.float32)
+    M_cpu_init = np.zeros((material_size, 3), dtype=real_t)
     for i in range(len(eps_r)):
         start_idx = z_indices[i] - material_begin
         end_idx = z_indices[i+1] - material_begin
@@ -89,13 +100,13 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
     # --- 5. Pre-calculate the Injection Pulse ---
     # Doing this on the CPU once prevents a massive GPU/CPU sync bottleneck during the loop
     pulse_func = pulse_gen(max_E, phase_diff, pulse_width, dt, wavelength, polarization_angle, safety_factor)
-    pulse_array = np.array([pulse_func(t) for t in range(total_time_steps)], dtype=np.complex64)
+    pulse_array = np.array([pulse_func(t) for t in range(total_time_steps)], dtype=complex_t)
     
     pulse_x_gpu = cp.asarray(pulse_array[:, 0])
     pulse_y_gpu = cp.asarray(pulse_array[:, 1])
 
     # --- 6. Load CUDA Kernels ---
-    magnetic_kernel, electric_kernel = load_kernels()
+    magnetic_kernel, electric_kernel = load_kernels(precision)
 
     # Block and Grid dimensions
     threads_per_block = 256
@@ -114,11 +125,11 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
     save_index_counter = 0
 
     # Faraday coefficient (vacuum, Courant 0.5)
-    coeff = cp.float32(0.5)
+    coeff = real_t(0.5)
 
     # Per-cell Ampere coefficients for lossy dielectric [Sullivan eq. 3.8]
-    coeff_E_cpu = np.ones(grid_size, dtype=np.float32)
-    coeff_H_cpu = np.full(grid_size, 0.5, dtype=np.float32)
+    coeff_E_cpu = np.ones(grid_size, dtype=real_t)
+    coeff_H_cpu = np.full(grid_size, 0.5, dtype=real_t)
     for i in range(len(eps_r)):
         eaf = dt * conductivity[i] / (2 * EPSILON_0 * eps_r[i])
         coeff_E_cpu[z_indices[i]:z_indices[i+1]] = (1 - eaf) / (1 + eaf)
@@ -139,7 +150,7 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
             (E_gpu, H_gpu, M_gpu, 
              np.int32(grid_size), coeff, 
              np.int32(material_begin), np.int32(material_end), 
-             cp.float32(dt), cp.float32(neg_gamma_LL_kernel), cp.float32(neg_lambda_mu),
+             real_t(dt), real_t(neg_gamma_LL_kernel), real_t(neg_lambda_mu),
              np.int32(closed_system), abc_left_gpu, abc_right_gpu)
         )
 

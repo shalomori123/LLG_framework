@@ -1,8 +1,19 @@
 #include <cuda_runtime.h>
 #include <cuComplex.h>
 
+// Precision: fp64 by default, compile with -DUSE_FP32 for single precision
+#ifdef USE_FP32
+typedef float real;
+typedef float2 real2;
+#define make_real2 make_float2
+#else
+typedef double real;
+typedef double2 real2;
+#define make_real2 make_double2
+#endif
+
 #define WARPS_PER_BLOCK 32
-#define ZERO make_float2(0.0f, 0.0f)
+#define ZERO make_real2((real)0, (real)0)
 
 // ============================================================================
 // LLG - Landau-Lifshitz-Gilbert step (RK4)
@@ -10,9 +21,9 @@
 
 // Helper: Cross Product (Register-only)
 __device__ void cross_product(
-    float ax, float ay, float az,
-    float bx, float by, float bz,
-    float &rx, float &ry, float &rz 
+    real ax, real ay, real az,
+    real bx, real by, real bz,
+    real &rx, real &ry, real &rz 
 ) {
     rx = ay * bz - az * by;
     ry = az * bx - ax * bz;
@@ -21,17 +32,17 @@ __device__ void cross_product(
 
 // Helper: LLG Derivative Logic
 __device__ void compute_llg_derivative(
-    float Mx, float My, float Mz,      
-    float Hx_real, float Hy_real, float Hz_real,
-    float neg_gamma_LL, float neg_coeff_damp,  // Constants
-    float &kx, float &ky, float &kz     // Output 
+    real Mx, real My, real Mz,      
+    real Hx_real, real Hy_real, real Hz_real,
+    real neg_gamma_LL, real neg_coeff_damp,  // Constants
+    real &kx, real &ky, real &kz     // Output 
 ) {
     // M x H
-    float c1x, c1y, c1z;
+    real c1x, c1y, c1z;
     cross_product(Mx, My, Mz, Hx_real, Hy_real, Hz_real, c1x, c1y, c1z);
 
     // M x (M x H)
-    float c2x, c2y, c2z;
+    real c2x, c2y, c2z;
     cross_product(Mx, My, Mz, c1x, c1y, c1z, c2x, c2y, c2z);
 
     kx = neg_gamma_LL * c1x + neg_coeff_damp * c2x;
@@ -41,16 +52,16 @@ __device__ void compute_llg_derivative(
 
 // Main Device LLG Function
 __device__ void LLG_RK4_calculation(
-    float Mx, float My, float Mz,
-    float Hx_real, float Hy_real, float Hz_real,
-    float dt, float neg_gamma_LL, float neg_coeff_damp,
-    float &M_next_x, float &M_next_y, float &M_next_z
+    real Mx, real My, real Mz,
+    real Hx_real, real Hy_real, real Hz_real,
+    real dt, real neg_gamma_LL, real neg_coeff_damp,
+    real &M_next_x, real &M_next_y, real &M_next_z
 ) 
 {
     // RK4 Accumulators
-    float kx, ky, kz;
-    float sum_x = 0.0f, sum_y = 0.0f, sum_z = 0.0f;
-    float half_dt = 0.5f * dt;
+    real kx, ky, kz;
+    real sum_x = 0, sum_y = 0, sum_z = 0;
+    real half_dt = (real)0.5 * dt;
 
     // Step 1
     compute_llg_derivative(
@@ -68,7 +79,7 @@ __device__ void LLG_RK4_calculation(
         neg_gamma_LL, neg_coeff_damp, 
         kx, ky, kz
     ); 
-    sum_x += 2.0f*kx; sum_y += 2.0f*ky; sum_z += 2.0f*kz;
+    sum_x += (real)2*kx; sum_y += (real)2*ky; sum_z += (real)2*kz;
 
     // Step 3
     compute_llg_derivative(
@@ -77,7 +88,7 @@ __device__ void LLG_RK4_calculation(
         neg_gamma_LL, neg_coeff_damp, 
         kx, ky, kz
     );
-    sum_x += 2.0f*kx; sum_y += 2.0f*ky; sum_z += 2.0f*kz;
+    sum_x += (real)2*kx; sum_y += (real)2*ky; sum_z += (real)2*kz;
 
     // Step 4
     compute_llg_derivative(
@@ -89,7 +100,7 @@ __device__ void LLG_RK4_calculation(
     sum_x += kx; sum_y += ky; sum_z += kz;
 
     // Final Update
-    float dt_div_6 = dt / 6.0f;
+    real dt_div_6 = dt / (real)6;
     M_next_x = Mx + dt_div_6 * sum_x;
     M_next_y = My + dt_div_6 * sum_y;
     M_next_z = Mz + dt_div_6 * sum_z;
@@ -101,8 +112,8 @@ __device__ void LLG_RK4_calculation(
 
 // Helper: Manage memory performance to get the left neighbor cell value
 __device__ void get_left_stencil(
-    float2 curr, float2& left, float2* warp_edges, 
-    float2* global_data, int idx
+    real2 curr, real2& left, real2* warp_edges, 
+    real2* global_data, int idx
 ) {
     const int lane_id = threadIdx.x % warpSize;
     const int warp_id = threadIdx.x / warpSize;
@@ -132,8 +143,8 @@ __device__ void get_left_stencil(
 
 // Helper: Manage memory performance to get the right neighbor cell value
 __device__ void get_right_stencil(
-    float2 curr, float2& right, float2* warp_edges, 
-    float2* global_data, int N, int idx
+    real2 curr, real2& right, real2* warp_edges, 
+    real2* global_data, int N, int idx
 ) {
     const int lane_id = threadIdx.x % warpSize;
     const int warp_id = threadIdx.x / warpSize;
@@ -167,35 +178,35 @@ __device__ void get_right_stencil(
 
 // Main Magnetic Kernel - ABC & Faraday & LLG & Coupling
 extern "C" __global__ void magnetic_kernel(
-    float2* E, float2* H,                   // 3xN Complex Matrices
-    float* M,                               // 3x(material_size) Real Matrix
-    int N, float coeff,                     // Maxwell coefficient
+    real2* E, real2* H,                   // 3xN Complex Matrices
+    real* M,                               // 3x(material_size) Real Matrix
+    int N, real coeff,                     // Maxwell coefficient
     int material_start, int material_end,   // Material spatial bounds
-    float dt, float neg_gamma_LL, float neg_lambda_mu, // LLG constants
+    real dt, real neg_gamma_LL, real neg_lambda_mu, // LLG constants
     int closed_system,                      // 1: M feeds back into H
-    float2* abc_left, float2* abc_right     // ABC buffers [2 slots][Ex, Ey]
+    real2* abc_left, real2* abc_right     // ABC buffers [2 slots][Ex, Ey]
 ) {
     // Shared boundary arrays
-    __shared__ float2 warp_edges[WARPS_PER_BLOCK];
+    __shared__ real2 warp_edges[WARPS_PER_BLOCK];
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     bool valid = (idx < N);
 
     // Base Pointers
-    float2* Ex = E;
-    float2* Ey = E + N;
-    float2* Hx = H;
-    float2* Hy = H + N;
-    float2* Hz = H + 2 * N;
+    real2* Ex = E;
+    real2* Ey = E + N;
+    real2* Hx = H;
+    real2* Hy = H + N;
+    real2* Hz = H + 2 * N;
 
     // GET H FIELD
-    float2 Hx_curr = valid ? Hx[idx] : ZERO;
-    float2 Hy_curr = valid ? Hy[idx] : ZERO;
-    float2 Hz_curr = valid ? Hz[idx] : ZERO;
+    real2 Hx_curr = valid ? Hx[idx] : ZERO;
+    real2 Hy_curr = valid ? Hy[idx] : ZERO;
+    real2 Hz_curr = valid ? Hz[idx] : ZERO;
 
     // GET E FIELD
-    float2 Ex_curr = valid ? Ex[idx] : ZERO;
-    float2 Ey_curr = valid ? Ey[idx] : ZERO;
+    real2 Ex_curr = valid ? Ex[idx] : ZERO;
+    real2 Ey_curr = valid ? Ey[idx] : ZERO;
 
     // ABC boundary condition [Sullivan 1.3 pg. 4]: E^n(0) = E^(n-2)(1) at Courant 0.5.
     // Only the owner thread of each edge cell touches its buffer, so any block count is safe.
@@ -215,7 +226,7 @@ extern "C" __global__ void magnetic_kernel(
         Ey[idx] = Ey_curr;
     }
 
-    float2 Ex_left, Ey_left; 
+    real2 Ex_left, Ey_left; 
     
     get_left_stencil(Ex_curr, Ex_left, warp_edges, Ex, idx);
     get_left_stencil(Ey_curr, Ey_left, warp_edges, Ey, idx);
@@ -223,18 +234,18 @@ extern "C" __global__ void magnetic_kernel(
 
     // GET M FIELD
     int material_size = material_end - material_start;
-    float *Mx = M + idx - material_start;
-    float *My = Mx + material_size;
-    float *Mz = My + material_size;
+    real *Mx = M + idx - material_start;
+    real *My = Mx + material_size;
+    real *Mz = My + material_size;
     bool in_material = (idx >= material_start && idx < material_end);
-    float Mx_curr, My_curr, Mz_curr;
-    float Mx_next, My_next, Mz_next;
+    real Mx_curr, My_curr, Mz_curr;
+    real Mx_next, My_next, Mz_next;
 
     // LLG interaction between H and M, driven by H^n (before Faraday)
     if (in_material) {
         Mx_curr = *Mx; My_curr = *My; Mz_curr = *Mz;
-        float M_mag = sqrtf(Mx_curr*Mx_curr + My_curr*My_curr + Mz_curr*Mz_curr);
-        float neg_coeff_damp = neg_lambda_mu / M_mag;
+        real M_mag = sqrt(Mx_curr*Mx_curr + My_curr*My_curr + Mz_curr*Mz_curr);
+        real neg_coeff_damp = neg_lambda_mu / M_mag;
         LLG_RK4_calculation(
             Mx_curr, My_curr, Mz_curr, 
             Hx_curr.x, Hy_curr.x, Hz_curr.x, 
@@ -272,32 +283,32 @@ extern "C" __global__ void magnetic_kernel(
 
 // Main Electric Kernel - Ampere & ABC buffer fill
 extern "C" __global__ void electric_kernel(
-    float2* E, float2* H, int N,
-    const float* coeff_E, const float* coeff_H, // Per-cell ca, cb [Sullivan eq. 3.8]
-    float2* abc_left, float2* abc_right
+    real2* E, real2* H, int N,
+    const real* coeff_E, const real* coeff_H, // Per-cell ca, cb [Sullivan eq. 3.8]
+    real2* abc_left, real2* abc_right
 ) {
     // Shared boundary arrays
-    __shared__ float2 warp_edges[WARPS_PER_BLOCK];
+    __shared__ real2 warp_edges[WARPS_PER_BLOCK];
 
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     bool valid = (idx < N);
 
     // Base Pointers
-    float2* Ex = E;
-    float2* Ey = E + N;
-    float2* Hx = H;
-    float2* Hy = H + N;
+    real2* Ex = E;
+    real2* Ey = E + N;
+    real2* Hx = H;
+    real2* Hy = H + N;
 
     // GET E FIELD
-    float2* Ex_ptr = Ex + idx;
-    float2* Ey_ptr = Ey + idx;
-    float2 Ex_curr = valid ? *Ex_ptr : ZERO;
-    float2 Ey_curr = valid ? *Ey_ptr : ZERO;
+    real2* Ex_ptr = Ex + idx;
+    real2* Ey_ptr = Ey + idx;
+    real2 Ex_curr = valid ? *Ex_ptr : ZERO;
+    real2 Ey_curr = valid ? *Ey_ptr : ZERO;
 
     // GET H FIELD
-    float2 Hx_curr = valid ? Hx[idx] : ZERO;
-    float2 Hy_curr = valid ? Hy[idx] : ZERO;
-    float2 Hx_right, Hy_right; 
+    real2 Hx_curr = valid ? Hx[idx] : ZERO;
+    real2 Hy_curr = valid ? Hy[idx] : ZERO;
+    real2 Hx_right, Hy_right; 
     
     get_right_stencil(Hx_curr, Hx_right, warp_edges, Hx, N, idx);
     get_right_stencil(Hy_curr, Hy_right, warp_edges, Hy, N, idx);
@@ -314,7 +325,7 @@ extern "C" __global__ void electric_kernel(
     // Ampere's law FDTD - Update E [Sullivan eq. 1.9a]
     // E[N-1] has no right neighbour and is set by the ABC
     if (idx < N - 1) {
-        float ca = coeff_E[idx], cb = coeff_H[idx];
+        real ca = coeff_E[idx], cb = coeff_H[idx];
         Ex_curr.x = ca * Ex_curr.x - cb * (Hy_right.x - Hy_curr.x); // Ex affected by Hy
         Ex_curr.y = ca * Ex_curr.y - cb * (Hy_right.y - Hy_curr.y);
         Ey_curr.x = ca * Ey_curr.x + cb * (Hx_right.x - Hx_curr.x); // Ey affected by Hx

@@ -8,7 +8,7 @@ difference of every output array.
 Usage (from the LLG_framework root, on a CUDA machine):
     python validation/compare_with_partner.py --partner-repo ../llg_framework_cpu_version_updated
     python validation/compare_with_partner.py --preset rt --steps 20000
-    python validation/compare_with_partner.py --precision fp64
+    python validation/compare_with_partner.py --precision fp32
 
 Partner backends used:
     fp32 full_width -> simulation_gpu.py        fp32 rt -> simulation_gpu_rt.py
@@ -98,7 +98,7 @@ def main():
     parser.add_argument("--partner-repo", type=Path,
                         default=REPO_ROOT.parent / "llg_framework_cpu_version_updated")
     parser.add_argument("--preset", choices=["full_width", "rt"], default="full_width")
-    parser.add_argument("--precision", choices=["fp32", "fp64"], default="fp32")
+    parser.add_argument("--precision", choices=["fp32", "fp64"], default="fp64")
     parser.add_argument("--steps", type=int, default=30000)
     parser.add_argument("--state", choices=["open", "close", "both"], default="both")
     args = parser.parse_args()
@@ -120,9 +120,7 @@ def main():
 
     for state in states:
         kwargs = dict(inputs, closed_system=(state == "close"))
-        mine_kwargs = dict(kwargs)
-        if args.precision != "fp32":
-            mine_kwargs["precision"] = args.precision
+        mine_kwargs = dict(kwargs, precision=args.precision)
 
         t0 = time.perf_counter()
         ours = mine.simulation(**mine_kwargs)
