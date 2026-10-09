@@ -98,10 +98,10 @@ extern "C" __global__ void magnetic_kernel(
     // GET E FIELD
     float2 Ex_curr = valid ? Ex[idx] : ZERO;
     float2 Ey_curr = valid ? Ey[idx] : ZERO;
-    float2 Ex_right, Ey_right; 
+    float2 Ex_left, Ey_left; 
     
-    get_right_stencil(Ex_curr, Ex_right, warp_edges, Ex, N, idx);
-    get_right_stencil(Ey_curr, Ey_right, warp_edges, Ey, N, idx);
+    get_left_stencil(Ex_curr, Ex_left, warp_edges, Ex, idx);
+    get_left_stencil(Ey_curr, Ey_left, warp_edges, Ey, idx);
     if (!valid) return;
 
     // GET M FIELD
@@ -110,11 +110,14 @@ extern "C" __global__ void magnetic_kernel(
     float *My = Mx + material_size;
     float *Mz = My + material_size;
 
-    // Faraday's law FDTD - Update H
-    Hx_curr.x += coeff * (Ey_right.x - Ey_curr.x); // Hx affected by Ey
-    Hx_curr.y += coeff * (Ey_right.y - Ey_curr.y);
-    Hy_curr.x += coeff * (Ex_right.x - Ex_curr.x); // Hy affected by Ex
-    Hy_curr.y += coeff * (Ex_right.y - Ex_curr.y);
+    // Faraday's law FDTD - Update H [Sullivan eq. 1.9b], H[i] sits at i-1/2
+    // H[0] has no left neighbour and stays untouched
+    if (idx > 0) {
+        Hx_curr.x += coeff * (Ey_curr.x - Ey_left.x); // Hx affected by Ey
+        Hx_curr.y += coeff * (Ey_curr.y - Ey_left.y);
+        Hy_curr.x -= coeff * (Ex_curr.x - Ex_left.x); // Hy affected by Ex
+        Hy_curr.y -= coeff * (Ex_curr.y - Ex_left.y);
+    }
 
     if (idx >= material_start && idx < material_end) {
         float Mx_curr = *Mx, My_curr = *My, Mz_curr = *Mz;
@@ -171,17 +174,18 @@ extern "C" __global__ void electric_kernel(
     // GET H FIELD
     float2 Hx_curr = valid ? Hx[idx] : ZERO;
     float2 Hy_curr = valid ? Hy[idx] : ZERO;
-    float2 Hx_left, Hy_left; 
+    float2 Hx_right, Hy_right; 
     
-    get_left_stencil(Hx_curr, Hx_left, warp_edges, Hx, idx);
-    get_left_stencil(Hy_curr, Hy_left, warp_edges, Hy, idx);
+    get_right_stencil(Hx_curr, Hx_right, warp_edges, Hx, N, idx);
+    get_right_stencil(Hy_curr, Hy_right, warp_edges, Hy, N, idx);
 
-    // Ampere's law FDTD - Update E
-    if (valid) {
-        Ex_curr.x += coeff * (Hy_left.x - Hy_curr.x); // Ex affected by Hy
-        Ex_curr.y += coeff * (Hy_left.y - Hy_curr.y);
-        Ey_curr.x += coeff * (Hx_left.x - Hx_curr.x); // Ey affected by Hx
-        Ey_curr.y += coeff * (Hx_left.y - Hx_curr.y);
+    // Ampere's law FDTD - Update E [Sullivan eq. 1.9a]
+    // E[N-1] has no right neighbour and is set by the ABC
+    if (idx < N - 1) {
+        Ex_curr.x -= coeff * (Hy_right.x - Hy_curr.x); // Ex affected by Hy
+        Ex_curr.y -= coeff * (Hy_right.y - Hy_curr.y);
+        Ey_curr.x += coeff * (Hx_right.x - Hx_curr.x); // Ey affected by Hx
+        Ey_curr.y += coeff * (Hx_right.y - Hx_curr.y);
     }
 
     // ABC boundary condition logic [Sullivan 1.3 pg. 4]
