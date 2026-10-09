@@ -14,6 +14,9 @@ typedef double2 real2;
 
 #define WARPS_PER_BLOCK 32
 #define ZERO make_real2((real)0, (real)0)
+#define PULSE_CELL 3
+
+// HOST_BOUNDARY (temporary, for benchmarking): pulse and ABC run as host CuPy ops instead
 
 // ============================================================================
 // LLG - Landau-Lifshitz-Gilbert step (RK4)
@@ -188,7 +191,8 @@ extern "C" __global__ void magnetic_kernel(
     real dt,
     const real* neg_gamma_LL, const real* neg_lambda_mu, // Per-case LLG constants
     const int* closed_system,               // Per case, 1: M feeds back into H
-    real2* abc_left, real2* abc_right       // Per case ABC buffers [2 slots][Ex, Ey]
+    real2* abc_left, real2* abc_right,      // Per case ABC buffers [2 slots][Ex, Ey]
+    const real2* pulse                      // This step's source [Ex, Ey], shared by all cases
 ) {
     // Shared boundary arrays
     __shared__ real2 warp_edges[WARPS_PER_BLOCK];
@@ -221,6 +225,16 @@ extern "C" __global__ void magnetic_kernel(
     real2 Ex_curr = valid ? Ex[idx] : ZERO;
     real2 Ey_curr = valid ? Ey[idx] : ZERO;
 
+#ifndef HOST_BOUNDARY
+    // Soft source: add the CPU-precomputed pulse to the source cell
+    if (idx == PULSE_CELL) {
+        real2 p_x = pulse[0], p_y = pulse[1];
+        Ex_curr.x += p_x.x; Ex_curr.y += p_x.y;
+        Ey_curr.x += p_y.x; Ey_curr.y += p_y.y;
+        Ex[idx] = Ex_curr;
+        Ey[idx] = Ey_curr;
+    }
+
     // ABC boundary condition [Sullivan 1.3 pg. 4]: E^n(0) = E^(n-2)(1) at Courant 0.5.
     // Only the owner thread of each edge cell touches its buffer, so any block count is safe.
     if (idx == 0) {
@@ -238,6 +252,7 @@ extern "C" __global__ void magnetic_kernel(
         Ex[idx] = Ex_curr;
         Ey[idx] = Ey_curr;
     }
+#endif
 
     real2 Ex_left, Ey_left; 
     
@@ -334,6 +349,7 @@ extern "C" __global__ void electric_kernel(
     get_right_stencil(Hx_curr, Hx_right, warp_edges, Hx, N, idx);
     get_right_stencil(Hy_curr, Hy_right, warp_edges, Hy, N, idx);
 
+#ifndef HOST_BOUNDARY
     // ABC: push E^n of the cells next to the edges into the second buffer slot
     if (idx == 1) {
         abc_left[2] = Ex_curr;
@@ -342,6 +358,7 @@ extern "C" __global__ void electric_kernel(
         abc_right[2] = Ex_curr;
         abc_right[3] = Ey_curr;
     }
+#endif
 
     // Ampere's law FDTD - Update E [Sullivan eq. 1.9a]
     // E[N-1] has no right neighbour and is set by the ABC

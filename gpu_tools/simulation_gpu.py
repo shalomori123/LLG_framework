@@ -19,6 +19,9 @@ DTYPES = {
 # Device memory for the per-location frame buffer, flushed to the output when full
 FRAME_BUFFER_BYTES = 256 * 2**20
 THREADS_PER_BLOCK = 256
+# Steps of source pulse computed on the CPU (fp64, vectorized) and uploaded at once
+PULSE_CHUNK_STEPS = 65536
+PULSE_CELL = 3
 
 
 def pulse_gen(max_E: float, phase: float, FWHM: float, dt: float, 
@@ -37,21 +40,25 @@ def pulse_gen(max_E: float, phase: float, FWHM: float, dt: float,
     sigma = (0.5 / (np.log(2)**0.5)) * FWHM
     peak_loc = safety_start * sigma
 
-    def out_pulse(n: int) -> np.array:
-        t = n * dt
-        return pulse_amp * np.exp(- (t - peak_loc)**2 / (2 * sigma**2)) * np.exp(1j * omega * t)
+    def out_pulse(n) -> np.array:
+        """n: step index or array of K indices -> (2,) or (K, 2) complex [Ex, Ey]."""
+        t = np.asarray(n) * dt
+        envelope = np.exp(- (t - peak_loc)**2 / (2 * sigma**2)) * np.exp(1j * omega * t)
+        return envelope[..., None] * pulse_amp
         
     return out_pulse
 
 
 @lru_cache(maxsize=None)
-def load_kernels(precision: str = "fp64"):
-    """Compile maxwell_kernel.cu once per process and precision.
+def load_kernels(precision: str = "fp64", host_boundary: bool = False):
+    """Compile maxwell_kernel.cu once per process and variant.
     No -arch: NVRTC targets the installed GPU."""
     current_dir = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(current_dir, "maxwell_kernel.cu"), "r") as f:
         cuda_code = f.read()
     options = ('-DUSE_FP32', '-use_fast_math') if precision == "fp32" else ()
+    if host_boundary:
+        options += ('-DHOST_BOUNDARY',)
     module = cp.RawModule(code=cuda_code, options=options)
     return module.get_function("magnetic_kernel"), module.get_function("electric_kernel")
 
@@ -74,7 +81,7 @@ def simulation_cases(cases: list[dict], z_indices: list[int], M0: np.array,
                      max_E: float, phase_diff: float, pulse_width: float,
                      save_locations, save_time_indices,
                      dt: float, total_time_steps: int, wavelength=800e-9, polarization_angle=0, safety_factor=4,
-                     time_interval=1, precision="fp64", output_paths=None):
+                     time_interval=1, precision="fp64", output_paths=None, host_boundary=False):
     """
     Run C cases that share the grid and pulse in the same kernel launches
     (blockIdx.y = case). Each case is a dict with eps_r, conductivity, damping,
@@ -83,6 +90,9 @@ def simulation_cases(cases: list[dict], z_indices: list[int], M0: np.array,
     With output_paths=None the results are returned in RAM; otherwise case c
     streams into <output_paths[c]>.simdata (memmap .npy files), so neither RAM
     nor VRAM grows with the number of time steps.
+
+    host_boundary (temporary, benchmark only): run the pulse injection and ABC
+    as host CuPy ops instead of inside the kernels.
     """
     real_t, complex_t = DTYPES[precision]
     C = len(cases)
@@ -125,16 +135,13 @@ def simulation_cases(cases: list[dict], z_indices: list[int], M0: np.array,
     M_soa_cpu = np.concatenate([M_cpu_init[:, 0], M_cpu_init[:, 1], M_cpu_init[:, 2]])
     M_gpu = cp.asarray(np.tile(M_soa_cpu, (C, 1)))
 
-    # --- 5. Pre-calculate the Injection Pulse ---
-    # Doing this on the CPU once prevents a massive GPU/CPU sync bottleneck during the loop
+    # --- 5. Injection Pulse ---
+    # Computed on the CPU in fp64, one chunk of steps at a time (refreshed in the loop)
     pulse_func = pulse_gen(max_E, phase_diff, pulse_width, dt, wavelength, polarization_angle, safety_factor)
-    pulse_array = np.array([pulse_func(t) for t in range(total_time_steps)], dtype=complex_t)
-    
-    pulse_x_gpu = cp.asarray(pulse_array[:, 0])
-    pulse_y_gpu = cp.asarray(pulse_array[:, 1])
+    pulse_chunk_gpu = None
 
     # --- 6. Load CUDA Kernels ---
-    magnetic_kernel, electric_kernel = load_kernels(precision)
+    magnetic_kernel, electric_kernel = load_kernels(precision, host_boundary)
 
     # Block and Grid dimensions: x splits the cells, y selects the case
     blocks_per_grid = ((grid_size + THREADS_PER_BLOCK - 1) // THREADS_PER_BLOCK, C)
@@ -197,18 +204,31 @@ def simulation_cases(cases: list[dict], z_indices: list[int], M0: np.array,
     # --- 8. THE MAIN FDTD LOOP ---
     for time_idx in tqdm(range(0, total_time_steps), desc=f"GPU Simulation Process ({C} case{'s' * (C > 1)}): "):
         
-        # 1. Inject the input signal directly on the GPU (all cases)
-        E_gpu[:, 3] += pulse_x_gpu[time_idx]
-        E_gpu[:, grid_size + 3] += pulse_y_gpu[time_idx]
+        # 1. Source pulse for this step: [Ex, Ey] row of the current chunk
+        step_in_chunk = time_idx % PULSE_CHUNK_STEPS
+        if step_in_chunk == 0:
+            steps = np.arange(time_idx, min(time_idx + PULSE_CHUNK_STEPS, total_time_steps))
+            pulse_chunk_gpu = cp.asarray(pulse_func(steps).astype(complex_t))
+        pulse_gpu = pulse_chunk_gpu[step_in_chunk]
 
-        # 2. Magnetic Kernel (Applies ABC, updates H, steps LLG, applies Coupling)
+        if host_boundary:
+            # Pulse injection and ABC [Sullivan 1.3] as host ops (columns ::N pick Ex and Ey)
+            E_gpu[:, PULSE_CELL::grid_size] += pulse_gpu
+            E_gpu[:, 0::grid_size] = abc_left_gpu[:, 0:2]
+            E_gpu[:, grid_size - 1::grid_size] = abc_right_gpu[:, 0:2]
+            abc_left_gpu[:, 0:2] = abc_left_gpu[:, 2:4]
+            abc_right_gpu[:, 0:2] = abc_right_gpu[:, 2:4]
+            abc_left_gpu[:, 2:4] = E_gpu[:, 1::grid_size]
+            abc_right_gpu[:, 2:4] = E_gpu[:, grid_size - 2::grid_size]
+
+        # 2. Magnetic Kernel (Injects pulse, applies ABC, updates H, steps LLG, applies Coupling)
         magnetic_kernel(
             blocks_per_grid, (THREADS_PER_BLOCK,),
             (E_gpu, H_gpu, M_gpu, 
              np.int32(grid_size), coeff, 
              np.int32(material_begin), np.int32(material_end), 
              real_t(dt), neg_gamma_LL_gpu, neg_lambda_mu_gpu,
-             closed_system_gpu, abc_left_gpu, abc_right_gpu)
+             closed_system_gpu, abc_left_gpu, abc_right_gpu, pulse_gpu)
         )
 
         # 3. Electric Kernel (Updates E, fills ABC buffers)
