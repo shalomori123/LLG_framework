@@ -91,9 +91,9 @@ extern "C" __global__ void magnetic_kernel(
     float2* Hz = H + 2 * N;
 
     // GET H FIELD
-    float2 Hx_curr = Hx[idx];
-    float2 Hy_curr = Hy[idx];
-    float2 Hz_curr = Hz[idx];
+    float2 Hx_curr = valid ? Hx[idx] : ZERO;
+    float2 Hy_curr = valid ? Hy[idx] : ZERO;
+    float2 Hz_curr = valid ? Hz[idx] : ZERO;
 
     // GET E FIELD
     float2 Ex_curr = valid ? Ex[idx] : ZERO;
@@ -165,8 +165,8 @@ extern "C" __global__ void electric_kernel(
     // GET E FIELD
     float2* Ex_ptr = Ex + idx;
     float2* Ey_ptr = Ey + idx;
-    float2 Ex_curr = *Ex_ptr;
-    float2 Ey_curr = *Ey_ptr;
+    float2 Ex_curr = valid ? *Ex_ptr : ZERO;
+    float2 Ey_curr = valid ? *Ey_ptr : ZERO;
 
     // GET H FIELD
     float2 Hx_curr = valid ? Hx[idx] : ZERO;
@@ -203,6 +203,8 @@ extern "C" __global__ void electric_kernel(
     }
 
     // Write back values
-    *Ex_ptr = Ex_curr;
-    *Ey_ptr = Ey_curr;
+    if (valid) {
+        *Ex_ptr = Ex_curr;
+        *Ey_ptr = Ey_curr;
+    }
 }
