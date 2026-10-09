@@ -6,7 +6,7 @@ Examples:
     python sim_run.py --batch                           # same, all cases in the same kernel launches
     python sim_run.py --preset rt --materials Co_Pt
     python sim_run.py --materials Co_Pt --state close --steps 30000 --output-dir quick_check
-    python sim_run.py --benchmark --materials Co_Pt --state close        # in-kernel vs host boundary
+    python sim_run.py --benchmark --materials Co_Pt --state close        # steps/s and registers
 """
 import argparse
 from pathlib import Path
@@ -29,11 +29,8 @@ def parse_args():
     parser.add_argument("--output-dir", type=Path, default=None,
                         help="default: simulation_result/<preset>")
     parser.add_argument("--overwrite", action="store_true", help="rerun cases whose bundle already exists")
-    parser.add_argument("--host-boundary", action="store_true",
-                        help="(temporary) pulse injection and ABC as host ops instead of in-kernel")
     parser.add_argument("--benchmark", action="store_true",
-                        help="(temporary) time in-kernel vs host boundary, nothing is saved "
-                             "(default --steps 200000)")
+                        help="print steps/s and kernel registers, nothing is saved (default --steps 200000)")
     return parser.parse_args()
 
 
@@ -42,24 +39,22 @@ def run_benchmark(args, preset, cases):
     import cupy as cp
 
     steps = preset["simulation_time"]
+    magnetic_kernel, electric_kernel = sim.load_kernels(args.precision)
+    regs = (magnetic_kernel.attributes["num_regs"], electric_kernel.attributes["num_regs"])
+    cp.cuda.Device().synchronize()
+    t0 = time.perf_counter()
+    sim.simulation_cases(
+        cases, preset["z_indexes"], preset["ms0"], preset["max_E"], preset["phase_diff"], preset["fwhm"],
+        preset["save_locations"], [], preset["dt"], steps,
+        wavelength=preset["wavelength"], safety_factor=preset["safety_start"],
+        time_interval=preset["time_interval"], precision=args.precision,
+    )
+    cp.cuda.Device().synchronize()
+    elapsed = time.perf_counter() - t0
     print(f"\nbenchmark: preset={args.preset}  precision={args.precision}  cases per launch={len(cases)}  "
           f"steps={steps}")
-    for host_boundary in (False, True):
-        magnetic_kernel, electric_kernel = sim.load_kernels(args.precision, host_boundary)
-        regs = (magnetic_kernel.attributes["num_regs"], electric_kernel.attributes["num_regs"])
-        cp.cuda.Device().synchronize()
-        t0 = time.perf_counter()
-        sim.simulation_cases(
-            cases, preset["z_indexes"], preset["ms0"], preset["max_E"], preset["phase_diff"], preset["fwhm"],
-            preset["save_locations"], [], preset["dt"], steps,
-            wavelength=preset["wavelength"], safety_factor=preset["safety_start"],
-            time_interval=preset["time_interval"], precision=args.precision, host_boundary=host_boundary,
-        )
-        cp.cuda.Device().synchronize()
-        elapsed = time.perf_counter() - t0
-        label = "host boundary" if host_boundary else "in-kernel"
-        print(f"  {label:<14} {steps / elapsed:10.0f} steps/s  ({elapsed:.1f} s)   "
-              f"num_regs magnetic={regs[0]} electric={regs[1]}")
+    print(f"  {steps / elapsed:10.0f} steps/s  ({elapsed:.1f} s)   "
+          f"num_regs magnetic={regs[0]} electric={regs[1]}")
 
 
 def main():
@@ -103,7 +98,7 @@ def main():
             preset["dt"], preset["simulation_time"],
             wavelength=preset["wavelength"], safety_factor=preset["safety_start"],
             time_interval=preset["time_interval"], precision=args.precision,
-            output_paths=[path for _, path in group], host_boundary=args.host_boundary,
+            output_paths=[path for _, path in group],
         )
 
 

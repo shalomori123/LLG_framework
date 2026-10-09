@@ -21,7 +21,6 @@ FRAME_BUFFER_BYTES = 256 * 2**20
 THREADS_PER_BLOCK = 256
 # Steps of source pulse computed on the CPU (fp64, vectorized) and uploaded at once
 PULSE_CHUNK_STEPS = 65536
-PULSE_CELL = 3
 
 
 def pulse_gen(max_E: float, phase: float, FWHM: float, dt: float, 
@@ -50,15 +49,13 @@ def pulse_gen(max_E: float, phase: float, FWHM: float, dt: float,
 
 
 @lru_cache(maxsize=None)
-def load_kernels(precision: str = "fp64", host_boundary: bool = False):
-    """Compile maxwell_kernel.cu once per process and variant.
+def load_kernels(precision: str = "fp64"):
+    """Compile maxwell_kernel.cu once per process and precision.
     No -arch: NVRTC targets the installed GPU."""
     current_dir = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(current_dir, "maxwell_kernel.cu"), "r") as f:
         cuda_code = f.read()
     options = ('-DUSE_FP32', '-use_fast_math') if precision == "fp32" else ()
-    if host_boundary:
-        options += ('-DHOST_BOUNDARY',)
     module = cp.RawModule(code=cuda_code, options=options)
     return module.get_function("magnetic_kernel"), module.get_function("electric_kernel")
 
@@ -81,7 +78,7 @@ def simulation_cases(cases: list[dict], z_indices: list[int], M0: np.array,
                      max_E: float, phase_diff: float, pulse_width: float,
                      save_locations, save_time_indices,
                      dt: float, total_time_steps: int, wavelength=800e-9, polarization_angle=0, safety_factor=4,
-                     time_interval=1, precision="fp64", output_paths=None, host_boundary=False):
+                     time_interval=1, precision="fp64", output_paths=None):
     """
     Run C cases that share the grid and pulse in the same kernel launches
     (blockIdx.y = case). Each case is a dict with eps_r, conductivity, damping,
@@ -91,8 +88,8 @@ def simulation_cases(cases: list[dict], z_indices: list[int], M0: np.array,
     streams into <output_paths[c]>.simdata (memmap .npy files), so neither RAM
     nor VRAM grows with the number of time steps.
 
-    host_boundary (temporary, benchmark only): run the pulse injection and ABC
-    as host CuPy ops instead of inside the kernels.
+    Pulse injection and ABC run inside magnetic_kernel/electric_kernel: as host
+    CuPy ops they cost ~7 extra launches per step, which dominate small grids.
     """
     real_t, complex_t = DTYPES[precision]
     C = len(cases)
@@ -141,7 +138,7 @@ def simulation_cases(cases: list[dict], z_indices: list[int], M0: np.array,
     pulse_chunk_gpu = None
 
     # --- 6. Load CUDA Kernels ---
-    magnetic_kernel, electric_kernel = load_kernels(precision, host_boundary)
+    magnetic_kernel, electric_kernel = load_kernels(precision)
 
     # Block and Grid dimensions: x splits the cells, y selects the case
     blocks_per_grid = ((grid_size + THREADS_PER_BLOCK - 1) // THREADS_PER_BLOCK, C)
@@ -210,16 +207,6 @@ def simulation_cases(cases: list[dict], z_indices: list[int], M0: np.array,
             steps = np.arange(time_idx, min(time_idx + PULSE_CHUNK_STEPS, total_time_steps))
             pulse_chunk_gpu = cp.asarray(pulse_func(steps).astype(complex_t))
         pulse_gpu = pulse_chunk_gpu[step_in_chunk]
-
-        if host_boundary:
-            # Pulse injection and ABC [Sullivan 1.3] as host ops (columns ::N pick Ex and Ey)
-            E_gpu[:, PULSE_CELL::grid_size] += pulse_gpu
-            E_gpu[:, 0::grid_size] = abc_left_gpu[:, 0:2]
-            E_gpu[:, grid_size - 1::grid_size] = abc_right_gpu[:, 0:2]
-            abc_left_gpu[:, 0:2] = abc_left_gpu[:, 2:4]
-            abc_right_gpu[:, 0:2] = abc_right_gpu[:, 2:4]
-            abc_left_gpu[:, 2:4] = E_gpu[:, 1::grid_size]
-            abc_right_gpu[:, 2:4] = E_gpu[:, grid_size - 2::grid_size]
 
         # 2. Magnetic Kernel (Injects pulse, applies ABC, updates H, steps LLG, applies Coupling)
         magnetic_kernel(
