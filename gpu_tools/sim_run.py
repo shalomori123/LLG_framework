@@ -44,18 +44,18 @@ def main():
 
     for material, state in tqdm(runs, desc="cases", unit="case"):
         bundle_path = output_dir / f"{material}_{state}.simdata"
-        if bundle_path.exists() and not args.overwrite:
+        if sim.bundle_complete(bundle_path) and not args.overwrite:
             continue
         case = cfg.material_case(material)
-        data = sim.simulation(
+        sim.simulation(
             preset["z_indexes"], case["eps_r"], case["conductivity"], case["damping"], preset["ms0"],
             preset["max_E"], preset["phase_diff"], preset["fwhm"],
             preset["save_locations"], preset["save_time"], cfg.STATES[state],
             preset["dt"], preset["simulation_time"],
             wavelength=preset["wavelength"], safety_factor=preset["safety_start"],
             time_interval=preset["time_interval"], precision=args.precision,
+            output_path=bundle_path,
         )
-        sim.save_simulation_bundle(bundle_path, data)
 
 
 if __name__ == "__main__":

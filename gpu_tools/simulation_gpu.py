@@ -10,6 +10,15 @@ from tqdm import tqdm
 
 from sim_config import EPSILON_0, MU_0, SPEED_OF_LIGHT, GAMMA
 
+# Host dtypes matching the kernel's real / real2 typedefs
+DTYPES = {
+    "fp64": (np.float64, np.complex128),
+    "fp32": (np.float32, np.complex64),
+}
+
+# Device memory for the per-location frame buffer, flushed to the output when full
+FRAME_BUFFER_BYTES = 256 * 2**20
+
 
 def pulse_gen(max_E: float, phase: float, FWHM: float, dt: float, 
               wave_len=800e-9, angle=0, safety_start=4):
@@ -34,13 +43,6 @@ def pulse_gen(max_E: float, phase: float, FWHM: float, dt: float,
     return out_pulse
 
 
-# Host dtypes matching the kernel's real / real2 typedefs
-DTYPES = {
-    "fp64": (np.float64, np.complex128),
-    "fp32": (np.float32, np.complex64),
-}
-
-
 @lru_cache(maxsize=None)
 def load_kernels(precision: str = "fp64"):
     """Compile maxwell_kernel.cu once per process and precision.
@@ -58,8 +60,15 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
                    max_E: float, phase_diff: float, pulse_width: float,
                    save_locations, save_time_indices, closed_system: bool,
                    dt: float, total_time_steps: int, wavelength=800e-9, polarization_angle=0, safety_factor=4, time_interval=1,
-                   precision="fp64"):
+                   precision="fp64", output_path=None):
+    """
+    One Maxwell-LLG run. With output_path=None the results are returned in RAM;
+    otherwise they stream into <output_path>.simdata (memmap .npy files), so
+    neither RAM nor VRAM grows with the number of time steps.
+    """
     real_t, complex_t = DTYPES[precision]
+    save_locations = np.asarray(save_locations, dtype=np.int64)
+    save_time_indices = np.asarray(save_time_indices, dtype=np.int64)
 
     # --- 1. Grid Definition ---
     spatial_step = 2 * SPEED_OF_LIGHT * dt
@@ -112,18 +121,6 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
     threads_per_block = 256
     blocks_per_grid = (grid_size + threads_per_block - 1) // threads_per_block
 
-    # --- 7. Output Buffers (CPU) ---
-    total_saved_frames = int(total_time_steps / time_interval + 1)
-    E_space_return = np.zeros((total_saved_frames, len(save_locations), 2), dtype=np.complex128)
-    H_space_return = np.zeros((total_saved_frames, len(save_locations), 2), dtype=np.complex128)
-    M_space_return = np.zeros((total_saved_frames, material_size, 3), dtype=np.float64)
-
-    E_time_return = np.zeros((len(save_time_indices), grid_size, 2), dtype=np.complex128)
-    H_time_return = np.zeros((len(save_time_indices), grid_size, 2), dtype=np.complex128)
-    M_time_return = np.zeros((len(save_time_indices), material_size, 3), dtype=np.float64)
-    
-    save_index_counter = 0
-
     # Faraday coefficient (vacuum, Courant 0.5)
     coeff = real_t(0.5)
 
@@ -136,6 +133,43 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
         coeff_H_cpu[z_indices[i]:z_indices[i+1]] = 0.5 / (eps_r[i] * (1 + eaf))
     coeff_E_gpu = cp.asarray(coeff_E_cpu)
     coeff_H_gpu = cp.asarray(coeff_H_cpu)
+
+    # --- 7. Outputs (RAM arrays, or memmap files inside the bundle) ---
+    writer = BundleWriter(output_path) if output_path is not None else None
+    new_array = writer.array if writer else (lambda key, shape, dtype: np.zeros(shape, dtype))
+
+    total_saved_frames = int(total_time_steps / time_interval + 1)
+    n_loc = len(save_locations)
+    E_space_return = new_array("E in locations", (total_saved_frames, n_loc, 2), complex_t)
+    H_space_return = new_array("H in locations", (total_saved_frames, n_loc, 2), complex_t)
+    M_space_return = new_array("ms in locations", (total_saved_frames, material_size, 3), real_t)
+
+    E_time_return = new_array("E times picture", (len(save_time_indices), grid_size, 2), complex_t)
+    H_time_return = new_array("H times picture", (len(save_time_indices), grid_size, 2), complex_t)
+    M_time_return = new_array("ms time picture", (len(save_time_indices), material_size, 3), real_t)
+
+    # Device frame buffer: K frames of [x-comp locations, y-comp locations] and SoA M
+    E_loc_index = cp.asarray(np.concatenate([save_locations, grid_size + save_locations]))
+    frame_bytes = 4 * n_loc * np.dtype(complex_t).itemsize + 3 * material_size * np.dtype(real_t).itemsize
+    chunk_frames = int(max(1, min(total_saved_frames, FRAME_BUFFER_BYTES // frame_bytes)))
+    E_loc_buf = cp.zeros((chunk_frames, 2 * n_loc), dtype=complex_t)
+    H_loc_buf = cp.zeros((chunk_frames, 2 * n_loc), dtype=complex_t)
+    M_buf = cp.zeros((chunk_frames, 3 * material_size), dtype=real_t)
+    buffered, flushed = 0, 0
+
+    def flush():
+        nonlocal buffered, flushed
+        if buffered == 0:
+            return
+        sl = slice(flushed, flushed + buffered)
+        E_space_return[sl] = E_loc_buf[:buffered].get().reshape(buffered, 2, n_loc).transpose(0, 2, 1)
+        H_space_return[sl] = H_loc_buf[:buffered].get().reshape(buffered, 2, n_loc).transpose(0, 2, 1)
+        M_space_return[sl] = M_buf[:buffered].get().reshape(buffered, 3, material_size).transpose(0, 2, 1)
+        flushed += buffered
+        buffered = 0
+
+    save_time_set = set(save_time_indices.tolist())
+    save_index_counter = 0
 
     # --- 8. THE MAIN FDTD LOOP ---
     for time_idx in tqdm(range(0, total_time_steps), desc="GPU Simulation Process: "):
@@ -161,31 +195,25 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
         )
 
         # --- 9. Data Extraction ---
-        # (We pull data back to the CPU ONLY when needed to avoid bottlenecking the GPU)
-        if time_idx in save_time_indices or (time_idx % time_interval == 0):
-            # Sync GPU before reading
-            cp.cuda.Stream.null.synchronize()
-            
-            # Reconstruct AoS from SoA
-            E_cpu = np.stack([E_gpu[:grid_size].get(), E_gpu[grid_size:2*grid_size].get()], axis=1)
-            H_cpu = np.stack([H_gpu[:grid_size].get(), H_gpu[grid_size:2*grid_size].get()], axis=1)
-            M_cpu = np.stack([M_gpu[:material_size].get(), 
-                              M_gpu[material_size:2*material_size].get(), 
-                              M_gpu[2*material_size:].get()], axis=1)
+        # Per-location frames stay on the GPU until the buffer is full
+        if not time_idx % time_interval:
+            cp.take(E_gpu, E_loc_index, out=E_loc_buf[buffered])
+            cp.take(H_gpu, E_loc_index, out=H_loc_buf[buffered])
+            M_buf[buffered] = M_gpu
+            buffered += 1
+            if buffered == chunk_frames:
+                flush()
 
-            if time_idx in save_time_indices:
-                H_time_return[save_index_counter, :, :] = H_cpu
-                E_time_return[save_index_counter, :, :] = E_cpu
-                M_time_return[save_index_counter, :, :] = M_cpu
-                save_index_counter += 1
+        # Full-grid snapshots are rare: copy straight out
+        if time_idx in save_time_set:
+            E_time_return[save_index_counter] = E_gpu.get().reshape(2, grid_size).T
+            H_time_return[save_index_counter] = H_gpu[:2 * grid_size].get().reshape(2, grid_size).T
+            M_time_return[save_index_counter] = M_gpu.get().reshape(3, material_size).T
+            save_index_counter += 1
 
-            if not time_idx % time_interval:
-                frame_idx = int(time_idx / time_interval)
-                H_space_return[frame_idx, :, :] = H_cpu[save_locations, :]
-                E_space_return[frame_idx, :, :] = E_cpu[save_locations, :]
-                M_space_return[frame_idx, :, :] = M_cpu
-            
-    return {
+    flush()
+
+    data = {
         "H times picture": H_time_return,
         "E times picture": E_time_return,
         "ms time picture": M_time_return,
@@ -199,6 +227,9 @@ def simulation(z_indices: list[int], eps_r: list[float], conductivity: list[floa
         "max magnetic field": max_E, "polarization phase": phase_diff, "pulse width (FWHM)": pulse_width, "mean wave lenght": wavelength,
         "systen status": closed_system, "dt": dt, "safety_start": safety_factor
     }
+    if writer:
+        return load_simulation_data(writer.close(data))
+    return data
 
 
 # =============================================================================
@@ -215,28 +246,56 @@ def _to_jsonable(value):
     return value
 
 
+def bundle_complete(bundle_path) -> bool:
+    return (Path(bundle_path).with_suffix(".simdata") / "manifest.json").exists()
+
+
+class BundleWriter:
+    """Arrays are created as .npy memmaps inside <name>.simdata/. manifest.json is
+    written last, so a crashed run never looks finished (see bundle_complete)."""
+
+    def __init__(self, bundle_path):
+        self.bundle_path = Path(bundle_path).with_suffix(".simdata")
+        if self.bundle_path.exists():
+            shutil.rmtree(self.bundle_path)
+        self.bundle_path.mkdir(parents=True)
+        self.manifest = {"arrays": {}, "metadata": {}}
+        self.memmaps = []
+
+    def _next_file(self, key):
+        file_name = f"array_{len(self.manifest['arrays']):02d}.npy"
+        self.manifest["arrays"][key] = file_name
+        return self.bundle_path / file_name
+
+    def array(self, key, shape, dtype):
+        if int(np.prod(shape)) == 0:  # np.memmap can't map an empty file
+            empty = np.zeros(shape, dtype)
+            np.save(self._next_file(key), empty)
+            return empty
+        mm = np.lib.format.open_memmap(self._next_file(key), mode="w+", dtype=dtype, shape=shape)
+        self.memmaps.append(mm)
+        return mm
+
+    def close(self, data: dict) -> Path:
+        """Store the remaining entries of data (small arrays, metadata) and finalize."""
+        for mm in self.memmaps:
+            mm.flush()
+        self.memmaps.clear()
+        for key, value in data.items():
+            if key in self.manifest["arrays"]:
+                continue
+            if isinstance(value, np.ndarray):
+                np.save(self._next_file(key), value, allow_pickle=False)
+            else:
+                self.manifest["metadata"][key] = _to_jsonable(value)
+
+        with (self.bundle_path / "manifest.json").open("w") as fh:
+            json.dump(self.manifest, fh)
+        return self.bundle_path
+
+
 def save_simulation_bundle(bundle_path, data: dict) -> Path:
-    bundle_path = Path(bundle_path).with_suffix(".simdata")
-    temp_path = bundle_path.with_name(bundle_path.name + ".tmp")
-    if temp_path.exists():
-        shutil.rmtree(temp_path)
-    temp_path.mkdir(parents=True)
-
-    manifest = {"arrays": {}, "metadata": {}}
-    for key, value in data.items():
-        if isinstance(value, np.ndarray):
-            file_name = f"array_{len(manifest['arrays']):02d}.npy"
-            np.save(temp_path / file_name, value, allow_pickle=False)
-            manifest["arrays"][key] = file_name
-        else:
-            manifest["metadata"][key] = _to_jsonable(value)
-
-    with (temp_path / "manifest.json").open("w") as fh:
-        json.dump(manifest, fh)
-    if bundle_path.exists():
-        shutil.rmtree(bundle_path)
-    temp_path.rename(bundle_path)
-    return bundle_path
+    return BundleWriter(bundle_path).close(data)
 
 
 def load_simulation_data(bundle_path, mmap: bool = True) -> dict:
