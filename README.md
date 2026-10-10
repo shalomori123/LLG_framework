@@ -17,7 +17,8 @@ Requires CuPy (`pip install cupy-cuda12x`), NumPy and tqdm.
 
 ```
 cd gpu_tools
-python sim_run.py                                     # full_width, all 6 materials, open + close
+python sim_run.py                                     # full_width, all 6 materials, closed system
+python sim_run.py --state both                        # open and closed (for the open-close difference)
 python sim_run.py --batch                             # same, as many cases per launch as fit in VRAM
 python sim_run.py --preset rt --materials Co_Pt       # return & transmission preset
 python sim_run.py --steps 30000 --output-dir quick    # truncated run for quick checks

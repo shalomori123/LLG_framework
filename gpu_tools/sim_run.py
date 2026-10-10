@@ -19,7 +19,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--preset", choices=list(cfg.PRESETS), default="full_width")
     parser.add_argument("--materials", nargs="+", choices=cfg.ALL_MATERIALS, default=cfg.ALL_MATERIALS)
-    parser.add_argument("--state", choices=["open", "close", "both"], default="both")
+    parser.add_argument("--state", choices=["open", "close", "both"], default="close",
+                        help="close: M feeds back into H; open: no feedback; both: run each material twice")
     parser.add_argument("--precision", choices=["fp64", "fp32"], default="fp64",
                         help="fp32 is faster on consumer GPUs but can't resolve the open/close difference")
     parser.add_argument("--batch", type=int, nargs="?", const=0, default=1, metavar="C",
