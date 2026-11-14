@@ -149,6 +149,8 @@ programming guide; CuPy.
 | 4 | Advisors' exact paper references | §6, §13 | email |
 | 5 | Remake conservation figure as line plot | §9.4 | ½ hr |
 | 6 | Trusted fp64 bundles for final figures (lab PC), produced by the unified framework | §9.4–9.5 | reuse #7 session |
-| 7 | Lab session with the unified framework: `validation/compare_with_partner.py` (fp32 and fp64), `sim_run.py --benchmark` on both presets with and without `--batch`, re-time Table 9.3 | §9.2, §9.6 (all **[re-run]** marks) | ½ day |
-| 8 | Nsight Systems + Nsight Compute profile of both presets, fill Table 9.4 | §9.6 | 1–2 hr |
+| 7 | Lab session with the unified framework: `validation/compare_with_partner.py` (fp32 and fp64), `benchmarks/profile_modes.py` (all modes), re-time Table 9.3 | §9.2, §9.6 (all **[re-run]** marks) | ½ day |
+| 8 | `benchmarks/profile_modes.py --presets full_width rt --precisions fp64 --batches 1 --nsys --ncu`, fill Table 9.4 | §9.6 | 1–2 hr |
+| 10 | `benchmarks/scaling_sweep.py` → Figures 9.7–9.8; replace "expect" in §9.6 with the measured crossover and plateau | §9.6 | ~1 hr GPU (CPU points dominate) |
+| 11 | Book versions of the analysis figures (no titles, bars → lines): `advisor_view_compare.py` panels → Figures 9.1 + 9.3, `make_poster_mo_signal.py` → Figure 9.4 | §9.2–9.5 | 1–2 hr |
 | 9 | Update poster diagrams (batch dimension, in-place updates) | §8 Figures 8.1–8.2 | 1 hr |

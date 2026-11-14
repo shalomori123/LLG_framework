@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import cupy as cp
+from cupyx.profiler import time_range
 from tqdm import tqdm
 
 from sim_config import EPSILON_0, MU_0, SPEED_OF_LIGHT, GAMMA, grid_size as compute_grid_size
@@ -74,6 +75,97 @@ def max_batch(grid_size: int, material_size: int, precision: str = "fp64") -> in
     return max(1, int(usable // case_device_bytes(grid_size, material_size, precision)))
 
 
+class DeviceState:
+    """Device arrays of C cases that share one grid, and the two kernel launches
+    of a time step (launch grid (blocks_x, C), blockIdx.y = case)."""
+
+    def __init__(self, cases: list[dict], z_indices: list[int], M0: np.array, dt: float,
+                 wavelength=800e-9, precision="fp64"):
+        real_t, complex_t = DTYPES[precision]
+        self.real_t, self.complex_t = real_t, complex_t
+        self.C = C = len(cases)
+        self.dt = dt
+
+        # --- 1. Grid Definition ---
+        self.material_begin = material_begin = z_indices[0]
+        self.material_end = z_indices[-1]
+        self.material_size = material_size = self.material_end - material_begin
+        self.grid_size = grid_size = compute_grid_size(z_indices, dt, wavelength)
+
+        # --- 2. LLG Physics Parameters (per case) ---
+        # The damping term is divided by the per-cell |M|, computed in the kernel each step
+        damping = np.array([case["damping"] for case in cases], dtype=np.float64)
+        gamma_ll = GAMMA / (1 + damping**2)
+        lambda_ll = gamma_ll * damping
+        self.neg_gamma_LL = cp.asarray((-gamma_ll * MU_0).astype(real_t))
+        self.neg_lambda_mu = cp.asarray((-lambda_ll * MU_0).astype(real_t))
+        self.closed_system = cp.asarray([int(case["closed_system"]) for case in cases], dtype=cp.int32)
+
+        # --- 3. GPU Memory Allocation (Monolithic SoA, one row per case) ---
+        # Complex arrays for E and H (real2 in CUDA)
+        self.E = cp.zeros((C, 2 * grid_size), dtype=complex_t)
+        self.H = cp.zeros((C, 3 * grid_size), dtype=complex_t)
+
+        # ABC Buffers - 2-step delay at Courant 0.5: [2 slots][Ex, Ey]
+        self.abc_left = cp.zeros((C, 4), dtype=complex_t)
+        self.abc_right = cp.zeros((C, 4), dtype=complex_t)
+
+        # --- 4. Initialize M on GPU ---
+        M_cpu_init = np.zeros((material_size, 3), dtype=real_t)
+        for i in range(len(z_indices) - 1):
+            start_idx = z_indices[i] - material_begin
+            end_idx = z_indices[i+1] - material_begin
+            for k in range(3):
+                M_cpu_init[start_idx:end_idx, k] = M0[i, k] / (end_idx - start_idx)
+
+        # Convert AoS to Monolithic SoA and upload to GPU
+        M_soa_cpu = np.concatenate([M_cpu_init[:, 0], M_cpu_init[:, 1], M_cpu_init[:, 2]])
+        self.M = cp.asarray(np.tile(M_soa_cpu, (C, 1)))
+
+        # --- 5. Load CUDA Kernels ---
+        self.magnetic_kernel, self.electric_kernel = load_kernels(precision)
+
+        # Block and Grid dimensions: x splits the cells, y selects the case
+        self.blocks_per_grid = ((grid_size + THREADS_PER_BLOCK - 1) // THREADS_PER_BLOCK, C)
+
+        # Faraday coefficient (vacuum, Courant 0.5)
+        self.coeff = real_t(0.5)
+
+        # Per-cell Ampere coefficients for lossy dielectric [Sullivan eq. 3.8]
+        coeff_E_cpu = np.ones((C, grid_size), dtype=real_t)
+        coeff_H_cpu = np.full((C, grid_size), 0.5, dtype=real_t)
+        for c, case in enumerate(cases):
+            for i in range(len(case["eps_r"])):
+                eaf = dt * case["conductivity"][i] / (2 * EPSILON_0 * case["eps_r"][i])
+                coeff_E_cpu[c, z_indices[i]:z_indices[i+1]] = (1 - eaf) / (1 + eaf)
+                coeff_H_cpu[c, z_indices[i]:z_indices[i+1]] = 0.5 / (case["eps_r"][i] * (1 + eaf))
+        self.coeff_E = cp.asarray(coeff_E_cpu)
+        self.coeff_H = cp.asarray(coeff_H_cpu)
+
+    def launch_magnetic(self, pulse_gpu):
+        """Injects pulse, applies ABC, updates H, steps LLG, applies coupling."""
+        self.magnetic_kernel(
+            self.blocks_per_grid, (THREADS_PER_BLOCK,),
+            (self.E, self.H, self.M,
+             np.int32(self.grid_size), self.coeff,
+             np.int32(self.material_begin), np.int32(self.material_end),
+             self.real_t(self.dt), self.neg_gamma_LL, self.neg_lambda_mu,
+             self.closed_system, self.abc_left, self.abc_right, pulse_gpu)
+        )
+
+    def launch_electric(self):
+        """Updates E, fills ABC buffers."""
+        self.electric_kernel(
+            self.blocks_per_grid, (THREADS_PER_BLOCK,),
+            (self.E, self.H, np.int32(self.grid_size), self.coeff_E, self.coeff_H,
+             self.abc_left, self.abc_right)
+        )
+
+    def step(self, pulse_gpu):
+        self.launch_magnetic(pulse_gpu)
+        self.launch_electric()
+
+
 def simulation_cases(cases: list[dict], z_indices: list[int], M0: np.array,
                      max_E: float, phase_diff: float, pulse_width: float,
                      save_locations, save_time_indices,
@@ -96,68 +188,15 @@ def simulation_cases(cases: list[dict], z_indices: list[int], M0: np.array,
     save_locations = np.asarray(save_locations, dtype=np.int64)
     save_time_indices = np.asarray(save_time_indices, dtype=np.int64)
 
-    # --- 1. Grid Definition ---
-    material_begin = z_indices[0]
-    material_end   = z_indices[-1]
-    material_size  = material_end - material_begin
-    grid_size = compute_grid_size(z_indices, dt, wavelength)
+    state = DeviceState(cases, z_indices, M0, dt, wavelength, precision)
+    grid_size, material_size = state.grid_size, state.material_size
+    E_gpu, H_gpu, M_gpu = state.E, state.H, state.M
 
-    # --- 2. LLG Physics Parameters (per case) ---
-    # The damping term is divided by the per-cell |M|, computed in the kernel each step
-    damping = np.array([case["damping"] for case in cases], dtype=np.float64)
-    gamma_ll = GAMMA / (1 + damping**2)
-    lambda_ll = gamma_ll * damping
-    neg_gamma_LL_gpu = cp.asarray((-gamma_ll * MU_0).astype(real_t))
-    neg_lambda_mu_gpu = cp.asarray((-lambda_ll * MU_0).astype(real_t))
-    closed_system_gpu = cp.asarray([int(case["closed_system"]) for case in cases], dtype=cp.int32)
-
-    # --- 3. GPU Memory Allocation (Monolithic SoA, one row per case) ---
-    # Complex arrays for E and H (real2 in CUDA)
-    E_gpu = cp.zeros((C, 2 * grid_size), dtype=complex_t)
-    H_gpu = cp.zeros((C, 3 * grid_size), dtype=complex_t)
-
-    # ABC Buffers - 2-step delay at Courant 0.5: [2 slots][Ex, Ey]
-    abc_left_gpu = cp.zeros((C, 4), dtype=complex_t)
-    abc_right_gpu = cp.zeros((C, 4), dtype=complex_t)
-
-    # --- 4. Initialize M on GPU ---
-    M_cpu_init = np.zeros((material_size, 3), dtype=real_t)
-    for i in range(len(z_indices) - 1):
-        start_idx = z_indices[i] - material_begin
-        end_idx = z_indices[i+1] - material_begin
-        for k in range(3):
-            M_cpu_init[start_idx:end_idx, k] = M0[i, k] / (end_idx - start_idx)
-
-    # Convert AoS to Monolithic SoA and upload to GPU
-    M_soa_cpu = np.concatenate([M_cpu_init[:, 0], M_cpu_init[:, 1], M_cpu_init[:, 2]])
-    M_gpu = cp.asarray(np.tile(M_soa_cpu, (C, 1)))
-
-    # --- 5. Injection Pulse ---
-    # Computed on the CPU in fp64, one chunk of steps at a time (refreshed in the loop)
+    # Injection pulse: computed on the CPU in fp64, one chunk of steps at a time (refreshed in the loop)
     pulse_func = pulse_gen(max_E, phase_diff, pulse_width, dt, wavelength, polarization_angle, safety_factor)
     pulse_chunk_gpu = None
 
-    # --- 6. Load CUDA Kernels ---
-    magnetic_kernel, electric_kernel = load_kernels(precision)
-
-    # Block and Grid dimensions: x splits the cells, y selects the case
-    blocks_per_grid = ((grid_size + THREADS_PER_BLOCK - 1) // THREADS_PER_BLOCK, C)
-
-    # Faraday coefficient (vacuum, Courant 0.5)
-    coeff = real_t(0.5)
-
-    # Per-cell Ampere coefficients for lossy dielectric [Sullivan eq. 3.8]
-    coeff_E_cpu = np.ones((C, grid_size), dtype=real_t)
-    coeff_H_cpu = np.full((C, grid_size), 0.5, dtype=real_t)
-    for c, case in enumerate(cases):
-        for i in range(len(case["eps_r"])):
-            eaf = dt * case["conductivity"][i] / (2 * EPSILON_0 * case["eps_r"][i])
-            coeff_E_cpu[c, z_indices[i]:z_indices[i+1]] = (1 - eaf) / (1 + eaf)
-            coeff_H_cpu[c, z_indices[i]:z_indices[i+1]] = 0.5 / (case["eps_r"][i] * (1 + eaf))
-    coeff_E_gpu = cp.asarray(coeff_E_cpu)
-    coeff_H_gpu = cp.asarray(coeff_H_cpu)
-
-    # --- 7. Outputs per case (RAM arrays, or memmap files inside the bundle) ---
+    # --- Outputs per case (RAM arrays, or memmap files inside the bundle) ---
     total_saved_frames = int(total_time_steps / time_interval + 1)
     n_loc = len(save_locations)
     n_snap = len(save_time_indices)
@@ -186,46 +225,34 @@ def simulation_cases(cases: list[dict], z_indices: list[int], M0: np.array,
         nonlocal buffered, flushed
         if buffered == 0:
             return
-        sl = slice(flushed, flushed + buffered)
-        E_host, H_host, M_host = E_loc_buf[:buffered].get(), H_loc_buf[:buffered].get(), M_buf[:buffered].get()
-        for c, out in enumerate(outs):
-            out["E in locations"][sl] = E_host[:, c].reshape(buffered, 2, n_loc).transpose(0, 2, 1)
-            out["H in locations"][sl] = H_host[:, c].reshape(buffered, 2, n_loc).transpose(0, 2, 1)
-            out["ms in locations"][sl] = M_host[:, c].reshape(buffered, 3, material_size).transpose(0, 2, 1)
+        with time_range("flush frames"):
+            sl = slice(flushed, flushed + buffered)
+            E_host, H_host, M_host = E_loc_buf[:buffered].get(), H_loc_buf[:buffered].get(), M_buf[:buffered].get()
+            for c, out in enumerate(outs):
+                out["E in locations"][sl] = E_host[:, c].reshape(buffered, 2, n_loc).transpose(0, 2, 1)
+                out["H in locations"][sl] = H_host[:, c].reshape(buffered, 2, n_loc).transpose(0, 2, 1)
+                out["ms in locations"][sl] = M_host[:, c].reshape(buffered, 3, material_size).transpose(0, 2, 1)
         flushed += buffered
         buffered = 0
 
     save_time_set = set(save_time_indices.tolist())
     save_index_counter = 0
 
-    # --- 8. THE MAIN FDTD LOOP ---
+    # --- THE MAIN FDTD LOOP ---
     for time_idx in tqdm(range(0, total_time_steps), desc=f"GPU Simulation Process ({C} case{'s' * (C > 1)}): "):
         
         # 1. Source pulse for this step: [Ex, Ey] row of the current chunk
         step_in_chunk = time_idx % PULSE_CHUNK_STEPS
         if step_in_chunk == 0:
-            steps = np.arange(time_idx, min(time_idx + PULSE_CHUNK_STEPS, total_time_steps))
-            pulse_chunk_gpu = cp.asarray(pulse_func(steps).astype(complex_t))
+            with time_range("pulse chunk"):
+                steps = np.arange(time_idx, min(time_idx + PULSE_CHUNK_STEPS, total_time_steps))
+                pulse_chunk_gpu = cp.asarray(pulse_func(steps).astype(complex_t))
         pulse_gpu = pulse_chunk_gpu[step_in_chunk]
 
-        # 2. Magnetic Kernel (Injects pulse, applies ABC, updates H, steps LLG, applies Coupling)
-        magnetic_kernel(
-            blocks_per_grid, (THREADS_PER_BLOCK,),
-            (E_gpu, H_gpu, M_gpu, 
-             np.int32(grid_size), coeff, 
-             np.int32(material_begin), np.int32(material_end), 
-             real_t(dt), neg_gamma_LL_gpu, neg_lambda_mu_gpu,
-             closed_system_gpu, abc_left_gpu, abc_right_gpu, pulse_gpu)
-        )
+        # 2. Magnetic then electric kernel
+        state.step(pulse_gpu)
 
-        # 3. Electric Kernel (Updates E, fills ABC buffers)
-        electric_kernel(
-            blocks_per_grid, (THREADS_PER_BLOCK,),
-            (E_gpu, H_gpu, np.int32(grid_size), coeff_E_gpu, coeff_H_gpu, abc_left_gpu, abc_right_gpu)
-        )
-
-        # --- 9. Data Extraction ---
-        # Per-location frames stay on the GPU until the buffer is full
+        # 3. Data extraction: per-location frames stay on the GPU until the buffer is full
         if not time_idx % time_interval:
             cp.take(E_gpu, E_loc_index, axis=1, out=E_loc_buf[buffered])
             cp.take(H_gpu, E_loc_index, axis=1, out=H_loc_buf[buffered])
@@ -236,11 +263,12 @@ def simulation_cases(cases: list[dict], z_indices: list[int], M0: np.array,
 
         # Full-grid snapshots are rare: copy straight out
         if time_idx in save_time_set:
-            E_host, H_host, M_host = E_gpu.get(), H_gpu[:, :2 * grid_size].get(), M_gpu.get()
-            for c, out in enumerate(outs):
-                out["E times picture"][save_index_counter] = E_host[c].reshape(2, grid_size).T
-                out["H times picture"][save_index_counter] = H_host[c].reshape(2, grid_size).T
-                out["ms time picture"][save_index_counter] = M_host[c].reshape(3, material_size).T
+            with time_range("snapshot"):
+                E_host, H_host, M_host = E_gpu.get(), H_gpu[:, :2 * grid_size].get(), M_gpu.get()
+                for c, out in enumerate(outs):
+                    out["E times picture"][save_index_counter] = E_host[c].reshape(2, grid_size).T
+                    out["H times picture"][save_index_counter] = H_host[c].reshape(2, grid_size).T
+                    out["ms time picture"][save_index_counter] = M_host[c].reshape(3, material_size).T
             save_index_counter += 1
 
     flush()

@@ -48,6 +48,23 @@ Results go to `simulation_result/<preset>/<material>_<state>.simdata/`
 through this code and the partner repo's GPU backends and prints the max
 relative difference per output array.
 
+## Benchmarks (`benchmarks/`)
+
+```
+python benchmarks/profile_modes.py                  # every preset x precision x {1, 12} cases per launch
+python benchmarks/profile_modes.py --nsys --ncu     # + Nsight Systems / Compute reports per mode
+python benchmarks/scaling_sweep.py                  # time per step vs grid size, CPU vs GPU, + plots
+```
+
+- `profile_modes.py`: production us/step, pure GPU time (CUDA-graph replay),
+  launch-loop time, GPU-busy %, host breakdown (cProfile), VRAM/RAM, registers,
+  occupancy, SM fill, effective bandwidth vs peak and a bottleneck verdict.
+- `scaling_sweep.py`: widens the `full_width` vacuum gap from 78 to 10^6 cells
+  (plus the real `rt` preset) and plots time per step, throughput and speedup.
+
+Results go to `benchmarks/results/<date-time>_<gpu>_<modes|scaling>/` (CSV, JSON,
+`report.md`, figures). Optional: `psutil` for host RAM, `nsys`/`ncu` on PATH.
+
 ## Other folders
 
 `python_core/` (CPU reference and verification notebooks) and

@@ -42,6 +42,8 @@ Several improvements follow naturally:
 - *Small-grid launch overhead.* CUDA Graphs (recording many steps and
   replaying them with one launch) or a persistent kernel that loops over time
   steps inside one block would remove most of the remaining launch cost.
+  The device-only curve of Figure 9.7, measured by exactly such a graph
+  replay, is the upper bound of this gain.
 - *Validation tables.* Running the remaining material combinations, now a
   single batched run, would complete them.
 - *Faraday rotation.* A linearly polarized preset (a one-line change in
@@ -144,5 +146,38 @@ essential to observing the physical effect as the equations themselves.
 - **B. Output bundle format** — the `.simdata` manifest structure and a
   loading example.
 - **C. Reproduction guide** — for every figure and table in Chapter 9: the
-  script and command that regenerates it.
+  script and command that regenerates it (draft below).
 - **D. Repository guide** — condensed README: layout, install, quickstart.
+- **E. Supplementary results** — run overviews and videos (list below).
+
+**C. Reproduction guide (draft).** [U] = unified framework repository
+(`LLG_framework`), [A] = analysis repository
+(`llg_framework_cpu_version_updated`). Bundles are produced first by
+`python gpu_tools/sim_run.py --preset <full_width|rt> --state both` [U].
+
+| Item | Script | Command / notes |
+|---|---|---|
+| 9.2 equivalence | `validation/compare_with_partner.py` [U] | `--precision fp64`, then `fp32` |
+| Figure 9.1 | `analysis/advisor_view_compare.py` [A] | `<GPU Co_Pt_close.simdata> <orig_data/Co_Pt_close.npy>` |
+| Table 9.1 | `comparison/compute_table3_RT.py` [A] | `rt` bundles, Co/Pt and Ni/Pt |
+| Figure 9.2 | `analysis/transmit_reflect_analysis.py` [A] | `rt` Co/Pt bundle |
+| Table 9.2 | `comparison/compute_table2_mz_my.py` [A] | `full_width` open + closed bundles |
+| Figure 9.3 | `analysis/check_M_norm.py` [A] | numbers; plot = Figure 9.1 panel C as lines |
+| Figure 9.4 | `analysis/make_poster_mo_signal.py` [A] | `full_width` open + closed, float64 |
+| Figure 9.5 | `analysis/faraday_rotation.py` [A] | open + closed bundles |
+| Figure 9.6 | `analysis/run_ms_sweep.py`, `analysis/compare_open_close_sweep.py` [A] | ~20 min per Ms scale |
+| Table 9.3 | `benchmarks/profile_modes.py` [U] | full-length times: `gpu_tools/sim_run.py` runs, timed |
+| Table 9.4 | `benchmarks/profile_modes.py` [U] | `--presets full_width rt --precisions fp64 --batches 1 --nsys --ncu` → `report.md` |
+| Figures 9.7–9.8 | `benchmarks/scaling_sweep.py` [U] | default sweep 78 → 10⁶ cells; `--plot-only <dir>` to restyle |
+
+**E. Supplementary results (planned).**
+
+- One-page overview of every final run (12 materials × open/closed):
+  `analysis/advisor_view.py` [A] on each bundle.
+- Figure 9.1 for the open system: `analysis/advisor_view_compare.py` [A] on the
+  `_open` bundles.
+- Videos (linked or QR code, not printable): wave propagation
+  `analysis/make_video.py`, magnetization profile `analysis/make_M_video.py`,
+  open−closed field difference `analysis/make_open_close_diff_video.py` [A].
+- Full mode profile tables (all presets × precisions × batch sizes):
+  `report.md` of `benchmarks/profile_modes.py` [U].
