@@ -228,7 +228,8 @@ def profile_mode(preset_name, precision, C, steps, profile_steps, mode_dir: Path
     bc.run_production(preset, cases, precision, profile_steps,
                       scaled_snapshots(preset_name, profile_steps), outputs)
     prof.disable()
-    shutil.rmtree(scratch, ignore_errors=True)
+    if not keep_bundles:
+        shutil.rmtree(scratch, ignore_errors=True)
     prof.dump_stats(mode_dir / "cprofile.prof")
     text = io.StringIO()
     pstats.Stats(prof, stream=text).sort_stats("tottime").print_stats(30)
