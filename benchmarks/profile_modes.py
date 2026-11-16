@@ -37,7 +37,7 @@ from pathlib import Path
 
 import bench_common as bc
 
-DEFAULT_STEPS = {"full_width": 20000, "rt": 5000}
+DEFAULT_STEPS = {"full_width": 100000, "rt": 50000}
 LAUNCH_LOOP_STEPS = 2000
 GRAPH_STEPS = 500
 
@@ -106,10 +106,18 @@ def host_breakdown(prof: cProfile.Profile) -> dict:
 
 
 def verdict(m) -> str:
-    if m["gpu_busy_pct"] is not None and m["gpu_busy_pct"] < 50:
-        if m["io_extraction_us"] > 0.3 * m["production_us_per_step"]:
-            return "host-bound: frame capture / output I/O"
+    """Largest of the three per-step costs: GPU work, launch overhead, output extraction."""
+    dev = m["device_us_per_step"]
+    if not dev:
+        return "unknown (no CUDA-graph time)"
+    parts = {"gpu": dev, "launch": m["launch_overhead_us"], "output": max(0.0, m["io_extraction_us"])}
+    main = max(parts, key=parts.get)
+    if main == "launch":
         return "host-bound: kernel launch (Python + driver)"
+    if main == "output":
+        return "host-bound: frame capture / output I/O"
+    if m["fits_l2"]:
+        return "GPU-bound, state fits in L2 (DRAM % not meaningful)"
     if m["bandwidth_pct_peak"] and m["bandwidth_pct_peak"] > 50:
         return "GPU DRAM-bandwidth-bound"
     if m["sm_fill"] < 1:
@@ -151,6 +159,9 @@ def profile_mode(preset_name, precision, C, steps, profile_steps, mode_dir: Path
     pool.free_all_blocks(); pinned.free_all_blocks()
     scratch = mode_dir / "bundles"
     outputs = [scratch / f"case{c:02d}" for c in range(C)]
+    # Fixed cost of one call (allocation, coefficients, bundle files, manifest): a 1-step run.
+    # Subtracted from the production time, since real runs have millions of steps.
+    m["setup_s"] = bc.run_production(preset, cases, precision, 1, [], outputs)
     with time_range(m["mode"]), bc.HostMonitor() as mon:
         elapsed = bc.run_production(preset, cases, precision, steps, save_time, outputs)
     free_b, total_b = cp.cuda.Device().mem_info
@@ -163,6 +174,8 @@ def profile_mode(preset_name, precision, C, steps, profile_steps, mode_dir: Path
     if not keep_bundles:
         shutil.rmtree(scratch, ignore_errors=True)
 
+    m["production_raw_us_per_step"] = 1e6 * elapsed / steps
+    elapsed = max(elapsed - m["setup_s"], 1e-9)
     m["production_us_per_step"] = 1e6 * elapsed / steps
     m["us_per_case_step"] = m["production_us_per_step"] / C
     m["ns_per_cell_step"] = 1e9 * elapsed / (steps * N * C)
@@ -198,6 +211,7 @@ def profile_mode(preset_name, precision, C, steps, profile_steps, mode_dir: Path
     m["io_extraction_us"] = m["production_us_per_step"] - m["launch_loop_us_per_step"]
 
     m.update(bc.traffic_model(N, mat, C, precision))
+    m["fits_l2"] = C * sim.case_device_bytes(N, mat, precision) < env["l2_cache_mb"] * 2**20
     if dev:
         m["bandwidth_gbs"] = m["bytes_per_step"] / (dev * 1e-6) / 1e9
         peak = env.get("peak_dram_bandwidth_gbs")
@@ -281,7 +295,8 @@ REPORT_COLUMNS = [
     ("production_us_per_step", "prod us/step", "{:.2f}"), ("device_us_per_step", "GPU us/step", "{:.2f}"),
     ("launch_loop_us_per_step", "launch loop us/step", "{:.2f}"), ("gpu_busy_pct", "GPU busy %", "{:.0f}"),
     ("ns_per_cell_step", "ns/cell-step", "{:.3f}"), ("bandwidth_pct_peak", "DRAM % peak", "{:.0f}"),
-    ("sm_fill", "SM fill", "{:.2f}"), ("num_regs_magnetic", "regs mag", "{}"),
+    ("sm_fill", "SM fill", "{:.2f}"), ("fits_l2", "fits L2", "{}"), ("setup_s", "setup s", "{:.2f}"),
+    ("num_regs_magnetic", "regs mag", "{}"),
     ("occupancy_magnetic", "occ mag", "{:.2f}"), ("vram_pool_mb", "VRAM MB", "{:.0f}"),
     ("ram_peak_mb", "RAM MB", "{:.0f}"), ("bottleneck", "bottleneck", "{}"),
 ]
@@ -313,7 +328,10 @@ def write_report(out: Path, env, rows):
         lines.append(f"| {row['mode']} | " + " | ".join(fmt(row.get(f"host_{k}_us_per_step"), "{:.2f}")
                                                      for k in keys) + " |")
     lines += ["", "## Columns", "",
-              "- **prod us/step**: wall time of the production loop (frames + snapshots to disk) per step.",
+              "- **prod us/step**: wall time of the production loop (frames + snapshots to disk) per step, "
+              "without the fixed per-call setup (**setup s**, measured with a 1-step run).",
+              "- **fits L2**: the whole device state of the C cases is smaller than the L2 cache, so the "
+              "kernels read L2, not DRAM, and DRAM % peak can exceed 100.",
               "- **GPU us/step**: pure device time from a CUDA-graph replay, no host launch cost.",
               "- **launch loop us/step**: Python loop of the two kernel launches only. If it is well above "
               "GPU us/step, the host cannot issue launches fast enough (launch-bound).",
