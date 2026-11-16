@@ -49,6 +49,8 @@ def parse_args():
     parser.add_argument("--batches", nargs="+", type=int, default=[1, 12], help="cases per launch")
     parser.add_argument("--steps", type=int, default=None,
                         help=f"time steps of the production run (default {DEFAULT_STEPS})")
+    parser.add_argument("--full", action="store_true",
+                        help="run each preset for its full simulation_time with all its snapshots")
     parser.add_argument("--profile-steps", type=int, default=3000, help="steps of the cProfile run")
     parser.add_argument("--nsys", action="store_true", help="also record an Nsight Systems timeline per mode")
     parser.add_argument("--ncu", action="store_true", help="also record Nsight Compute kernel reports per mode")
@@ -358,9 +360,13 @@ def main():
     bc.write_json(out / "environment.json", env)
     print(f"{env['gpu']}  ->  {out}")
 
+    import sim_config as cfg
     rows = []
     for preset in args.presets:
-        steps = args.steps or DEFAULT_STEPS.get(preset, 5000)
+        if args.full:
+            steps = cfg.build_preset(preset)["simulation_time"]
+        else:
+            steps = args.steps or DEFAULT_STEPS.get(preset, 5000)
         for precision in args.precisions:
             for C in args.batches:
                 name = mode_name(preset, precision, C)
