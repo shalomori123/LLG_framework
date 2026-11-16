@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 import bench_common as bc
@@ -351,6 +352,9 @@ def main():
                     m = profile_mode(preset, precision, C, steps, args.profile_steps, mode_dir, env,
                                      args.keep_bundles)
                 except Exception as exc:  # e.g. out of memory: record and continue
+                    trace = traceback.format_exc()
+                    print(trace)
+                    (mode_dir / "error.txt").write_text(trace)
                     m = {"mode": name, "preset": preset, "precision": precision, "cases": C,
                          "bottleneck": f"failed: {type(exc).__name__}: {exc}"}
                 bc.write_json(mode_dir / "metrics.json", m)

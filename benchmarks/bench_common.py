@@ -88,9 +88,20 @@ def environment() -> dict:
     return env
 
 
+def kernel_attributes(kernel) -> dict:
+    """num_regs / local_size_bytes / shared_size_bytes of a RawKernel or a
+    RawModule.get_function() Function (which has no .attributes)."""
+    if hasattr(kernel, "attributes"):
+        return kernel.attributes
+    import cupy as cp
+    # CUfunction_attribute: 1 shared, 3 local, 4 num regs
+    get = lambda attr: cp.cuda.driver.funcGetAttribute(attr, kernel.ptr)
+    return {"num_regs": get(4), "local_size_bytes": get(3), "shared_size_bytes": get(1)}
+
+
 def kernel_info(kernel, env: dict) -> dict:
     """Registers, spills, shared memory and theoretical occupancy at 256 threads/block."""
-    attrs = kernel.attributes
+    attrs = kernel_attributes(kernel)
     regs = attrs["num_regs"]
     warps_per_block = THREADS_PER_BLOCK // 32
     regs_per_warp = math.ceil(regs * 32 / 256) * 256          # allocation granularity 256

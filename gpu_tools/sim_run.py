@@ -41,7 +41,8 @@ def run_benchmark(args, preset, cases):
 
     steps = preset["simulation_time"]
     magnetic_kernel, electric_kernel = sim.load_kernels(args.precision)
-    regs = (magnetic_kernel.attributes["num_regs"], electric_kernel.attributes["num_regs"])
+    # RawModule functions have no .attributes; 4 = CU_FUNC_ATTRIBUTE_NUM_REGS
+    regs = tuple(cp.cuda.driver.funcGetAttribute(4, k.ptr) for k in (magnetic_kernel, electric_kernel))
     cp.cuda.Device().synchronize()
     t0 = time.perf_counter()
     sim.simulation_cases(
